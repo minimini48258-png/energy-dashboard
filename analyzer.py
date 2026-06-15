@@ -61,6 +61,18 @@ def aggregate_30min(df: pd.DataFrame, by_facility: bool = True) -> pd.DataFrame:
     )
 
 
+def aggregate_30min_by_group(df: pd.DataFrame) -> pd.DataFrame:
+    """group_label 列でグループ集計した 30 分値を返す（visualizer 互換: facility_name 列に変換）。"""
+    if "group_label" not in df.columns:
+        return aggregate_30min(df, by_facility=False)
+    return (
+        df.groupby(["datetime", "group_label"], as_index=False)["consumption_kwh"]
+        .sum()
+        .rename(columns={"group_label": "facility_name"})
+        .sort_values("datetime")
+    )
+
+
 def aggregate_daily(df: pd.DataFrame, by_facility: bool = False) -> pd.DataFrame:
     """日別使用量（kWh/日）。"""
     df = df.copy()
