@@ -24,22 +24,6 @@ st.set_page_config(
 
 
 # ---------------------------------------------------------------------------
-# キャッシュ付きファイル読み込み
-# ファイルの中身（bytes）をキーにキャッシュするので、同じファイルを再アップロードしても再処理しない
-# ---------------------------------------------------------------------------
-
-@st.cache_data(show_spinner=False)
-def _load_and_clean(file_bytes: bytes, filename: str) -> tuple[pd.DataFrame, object, dict]:
-    buf = io.BytesIO(file_bytes)
-    df_raw, mapping = data_loader.load_file(buf)
-    missing = data_cleaner.validate_standard_columns(df_raw)
-    if missing:
-        return df_raw, None, mapping  # 手動マッピングが必要
-    df_clean, report = data_cleaner.clean(df_raw)
-    return df_clean, report, mapping
-
-
-# ---------------------------------------------------------------------------
 # セッション状態の初期化
 # ---------------------------------------------------------------------------
 
@@ -49,7 +33,7 @@ def _init_state() -> None:
         "clean_report": None,
         "mapping_confirmed": False,
         "df_raw_unmapped": None,
-        "unmapped_filename": None,
+        "loaded_file_ids": set(),   # 処理済みファイルIDのセット
     }
     for k, v in defaults.items():
         if k not in st.session_state:
@@ -71,8 +55,64 @@ def _format_kwh(v: float) -> str:
     return f"{v:.2f} kWh"
 
 
+def _process_files(uploaded_files) -> None:
+    """アップロードされたファイルを処理してセッション状態に保存する。"""
+    current_ids = {f.file_id for f in uploaded_files}
+    already_loaded = st.session_state["loaded_file_ids"]
+
+    # 前回と同じファイルセットなら再処理しない
+    if current_ids == already_loaded and st.session_state["df"] is not None:
+        return
+
+    all_dfs: list[pd.DataFrame] = []
+    all_mappings: list[dict] = []
+    errors: list[str] = []
+
+    progress = st.sidebar.progress(0, text="読み込み準備中...")
+
+    for i, f in enumerate(uploaded_files):
+        progress.progress((i) / len(uploaded_files), text=f"読み込み中: {f.name}")
+        try:
+            raw_bytes = f.read()
+            buf = io.BytesIO(raw_bytes)
+            df_raw, mapping = data_loader.load_file(buf)
+
+            missing = data_cleaner.validate_standard_columns(df_raw)
+            if missing:
+                st.session_state["df_raw_unmapped"] = df_raw
+                progress.empty()
+                return
+
+            df_clean, report = data_cleaner.clean(df_raw)
+            # Arrow 文字列型を通常の object 型に変換（シリアライズ安定化）
+            df_clean["facility_name"] = df_clean["facility_name"].astype(object)
+
+            all_dfs.append(df_clean)
+            all_mappings.append(mapping)
+
+            fmt = mapping.get("format", "standard")
+            label = "横展開（1日1行×48列）" if fmt == "wide_daily" else "標準形式"
+            st.sidebar.caption(f"✅ {f.name}：{len(df_clean):,} 行 / {label}")
+
+        except Exception as e:
+            errors.append(f"{f.name}: {e}")
+
+    progress.progress(1.0, text="処理完了")
+    progress.empty()
+
+    for e in errors:
+        st.sidebar.error(e)
+
+    if all_dfs:
+        merged = pd.concat(all_dfs, ignore_index=True)
+        st.session_state["df"] = merged
+        st.session_state["clean_report"] = report
+        st.session_state["mapping_confirmed"] = True
+        st.session_state["loaded_file_ids"] = current_ids
+
+
 # ---------------------------------------------------------------------------
-# サイドバー：ファイルアップロード
+# サイドバー
 # ---------------------------------------------------------------------------
 
 with st.sidebar:
@@ -86,69 +126,31 @@ with st.sidebar:
         accept_multiple_files=True,
     )
 
-    # ファイルがアップロードされたら即時処理（ボタン不要）
     if uploaded_files:
-        all_dfs: list[pd.DataFrame] = []
-        all_mappings: list[dict] = []
-        errors: list[str] = []
-        needs_manual_mapping = False
-
-        for f in uploaded_files:
-            try:
-                file_bytes = f.read()
-                with st.spinner(f"読み込み中: {f.name}"):
-                    df_result, report_result, mapping = _load_and_clean(file_bytes, f.name)
-
-                if report_result is None:
-                    # 標準列が見つからず手動マッピングが必要
-                    st.session_state["df_raw_unmapped"] = df_result
-                    st.session_state["unmapped_filename"] = f.name
-                    needs_manual_mapping = True
-                else:
-                    all_dfs.append(df_result)
-                    all_mappings.append(mapping)
-
-                    fmt = mapping.get("format", "standard")
-                    if fmt == "wide_daily":
-                        st.caption(f"📋 {f.name}：横展開形式（1日1行×48列）")
-                    else:
-                        st.caption(f"✅ {f.name}：{len(df_result):,} 行")
-
-            except Exception as e:
-                errors.append(f"{f.name}: {e}")
-
-        for e in errors:
-            st.error(e)
-
-        if all_dfs and not needs_manual_mapping:
-            merged = pd.concat(all_dfs, ignore_index=True)
-            st.session_state["df"] = merged
-            st.session_state["clean_report"] = report_result
-            st.session_state["mapping_confirmed"] = True
-            st.success(f"✅ 合計 {len(merged):,} 行を読み込みました")
-
-    # アップロードがクリアされたらリセット
-    if not uploaded_files and st.session_state.get("df") is not None:
-        if st.button("データをクリア"):
+        _process_files(uploaded_files)
+    else:
+        # ファイルが削除されたらリセット
+        if st.session_state["df"] is not None and st.session_state["loaded_file_ids"]:
             st.session_state["df"] = None
             st.session_state["clean_report"] = None
             st.session_state["mapping_confirmed"] = False
-            st.rerun()
+            st.session_state["loaded_file_ids"] = set()
 
-    # 手動列マッピング（自動マッピング失敗時）
+    # 手動列マッピング
     if st.session_state.get("df_raw_unmapped") is not None and not st.session_state["mapping_confirmed"]:
         st.markdown("---")
         st.subheader("🔧 列マッピング")
         raw = st.session_state["df_raw_unmapped"]
         cols = list(raw.columns)
 
-        sel_dt = st.selectbox("日時列 (datetime)", options=cols, index=0)
-        sel_fac = st.selectbox("施設名列 (facility_name)", options=cols, index=min(1, len(cols)-1))
-        sel_kwh = st.selectbox("使用量列 (consumption_kwh)", options=cols, index=min(2, len(cols)-1))
+        sel_dt = st.selectbox("日時列", options=cols, index=0)
+        sel_fac = st.selectbox("施設名列", options=cols, index=min(1, len(cols)-1))
+        sel_kwh = st.selectbox("使用量列", options=cols, index=min(2, len(cols)-1))
 
         if st.button("マッピングを確定", type="primary"):
             renamed = raw.rename(columns={sel_dt: "datetime", sel_fac: "facility_name", sel_kwh: "consumption_kwh"})
             df_clean, report = data_cleaner.clean(renamed)
+            df_clean["facility_name"] = df_clean["facility_name"].astype(object)
             st.session_state["df"] = df_clean
             st.session_state["clean_report"] = report
             st.session_state["mapping_confirmed"] = True
@@ -161,16 +163,18 @@ with st.sidebar:
         try:
             sample_df, _ = data_loader.load_file("data/sample/sample_data.csv")
             df_clean, report = data_cleaner.clean(sample_df)
+            df_clean["facility_name"] = df_clean["facility_name"].astype(object)
             st.session_state["df"] = df_clean
             st.session_state["clean_report"] = report
             st.session_state["mapping_confirmed"] = True
-            st.success(f"✅ サンプルデータを読み込みました（{len(df_clean):,} 行）")
+            st.session_state["loaded_file_ids"] = set()
+            st.success(f"✅ サンプルデータ（{len(df_clean):,} 行）")
         except FileNotFoundError:
             st.error("サンプルデータが見つかりません。generate_sample.py を実行してください。")
 
 
 # ---------------------------------------------------------------------------
-# データ品質レポート
+# メインエリア
 # ---------------------------------------------------------------------------
 
 df: pd.DataFrame | None = st.session_state.get("df")
@@ -178,7 +182,7 @@ report = st.session_state.get("clean_report")
 
 if df is None:
     st.title("⚡ 電力需給分析ダッシュボード")
-    st.info("👈 サイドバーからExcel / CSVをアップロードしてください。サンプルデータで動作確認もできます。")
+    st.info("👈 サイドバーからExcel / CSVをアップロードしてください。")
     st.markdown("""
     ### 対応データ形式
 
@@ -266,7 +270,7 @@ if filtered.empty:
 
 
 # ---------------------------------------------------------------------------
-# KPI メトリクス
+# KPI
 # ---------------------------------------------------------------------------
 
 stats = analyzer.summary_stats(filtered)
@@ -287,16 +291,17 @@ tab_demand, tab_pattern, tab_supply = st.tabs(["📈 需要カーブ", "📊 需
 
 with tab_demand:
     by_fac = agg_mode == "施設別"
-    ts_data = analyzer.aggregate_30min(filtered, by_facility=by_fac)
     st.plotly_chart(
-        visualizer.demand_timeseries(ts_data, title=f"電力使用量（30分値）— {period_option}"),
+        visualizer.demand_timeseries(
+            analyzer.aggregate_30min(filtered, by_facility=by_fac),
+            title=f"電力使用量（30分値）— {period_option}",
+        ),
         use_container_width=True,
     )
 
 with tab_pattern:
     by_fac_pat = agg_mode == "施設別"
     col_l, col_r = st.columns(2)
-
     with col_l:
         st.plotly_chart(
             visualizer.monthly_bar(analyzer.aggregate_monthly(filtered, by_facility=by_fac_pat), by_facility=by_fac_pat),
@@ -307,13 +312,11 @@ with tab_pattern:
             visualizer.hourly_avg_bar(analyzer.aggregate_hourly_avg(filtered, by_facility=by_fac_pat), by_facility=by_fac_pat),
             use_container_width=True,
         )
-
     col_l2, col_r2 = st.columns(2)
     with col_l2:
         st.plotly_chart(visualizer.weekday_holiday_line(analyzer.weekday_vs_holiday(filtered)), use_container_width=True)
     with col_r2:
         st.plotly_chart(visualizer.facility_ranking_bar(analyzer.facility_annual_ranking(filtered)), use_container_width=True)
-
     st.plotly_chart(
         visualizer.daily_bar(analyzer.aggregate_daily(filtered, by_facility=by_fac_pat), by_facility=by_fac_pat),
         use_container_width=True,
@@ -324,5 +327,4 @@ with tab_supply:
     **このタブは次フェーズで実装します。**
 
     追加予定：太陽光・蓄電池・市場調達の入力 → 需給バランス・電源構成比グラフ
-    （`analyzer.py` の `calc_supply_demand_balance()` / `visualizer.py` の `supply_demand_chart()` は実装済み）
     """)
