@@ -1,11 +1,18 @@
 """
 data_loader.py
 Excelまたは CSV ファイルを読み込み、標準形式の DataFrame に変換する。
+
+対応フォーマット：
+  A) 標準縦展開形式：datetime / facility_name / consumption_kwh の列を持つ長形式
+  B) 横展開日別形式：1行＝1日、30分値が48列（例：東北電力の使用量ダウンロードCSV）
+       - 1行目：タイトル（download_siyouryo_30min など）
+       - 2行目：列ヘッダー（年月日、ご契約名義、0:00～0:30 … 23:30～24:00 など）
 """
 
 from __future__ import annotations
 
 import io
+import re
 from pathlib import Path
 from typing import Any
 
@@ -17,7 +24,6 @@ STANDARD_COLUMNS = {
     "consumption_kwh": "consumption_kwh",
 }
 
-# よくある列名のエイリアスマッピング（大文字小文字を正規化して照合）
 DEFAULT_ALIAS_MAP: dict[str, list[str]] = {
     "datetime": [
         "日時", "datetime", "date_time", "timestamp", "time", "時刻", "年月日時刻",
@@ -34,6 +40,116 @@ DEFAULT_ALIAS_MAP: dict[str, list[str]] = {
 }
 
 
+# ---------------------------------------------------------------------------
+# フォーマット判定
+# ---------------------------------------------------------------------------
+
+def _is_wide_daily_format(peek: pd.DataFrame) -> bool:
+    """先頭 3 行を見て横展開（1日1行×48列）形式かどうか判定する。
+
+    想定構造（header=0 で読んだとき）:
+      columns   = Excel row 0 (タイトル行): Unnamed: 0, 長門町役場, Unnamed: 2, ...
+      iloc[0]   = Excel row 1 (列ヘッダー行): 年月日, お客様番号, ..., 0:00～0:30, ...
+      iloc[1]   = Excel row 2 (最初のデータ行): 20210801, ...
+    """
+    if peek.empty:
+        return False
+
+    # ケース1: iloc[0] が実際の列ヘッダー行（=横展開形式の典型パターン）
+    # → '年月日' が iloc[0] の値として存在する
+    row0_vals = peek.iloc[0].astype(str).tolist()
+    if "年月日" in row0_vals:
+        return True
+
+    # ケース2: 既に正しいヘッダーで読まれていて、列名に 年月日 と 時間帯列が混在
+    col_strs = peek.columns.astype(str).tolist()
+    if "年月日" in col_strs and any("～" in c for c in col_strs):
+        return True
+
+    return False
+
+
+def _is_30min_timeslot(col: str) -> bool:
+    """列名が 30 分間隔の時間帯を表すか判定（例: '0:00～0:30', '23:30～24:00'）。"""
+    m = re.match(r"^(\d+):(\d+)～(\d+):(\d+)$", str(col).strip())
+    if not m:
+        return False
+    h1, m1, h2, m2 = int(m.group(1)), int(m.group(2)), int(m.group(3)), int(m.group(4))
+    end_mins = (24 if h2 == 24 else h2) * 60 + m2
+    return (end_mins - h1 * 60 - m1) == 30
+
+
+# ---------------------------------------------------------------------------
+# 横展開形式のパーサー
+# ---------------------------------------------------------------------------
+
+def _load_wide_daily(source: Any, sheet_name: int | str = 0) -> pd.DataFrame:
+    """
+    1行1日・30分値横展開形式のExcelを読み込み、標準長形式に変換する。
+
+    想定カラム：
+      年月日（YYYYMMDD）/ ご契約名義 / ... / 0:00～0:30 ～ 23:30～24:00 / 備考
+    """
+    df = pd.read_excel(source, sheet_name=sheet_name, header=1, dtype=str)
+    df.columns = [str(c).strip() for c in df.columns]
+
+    # タイトル行（download_siyouryo… 等）を除去：年月日が8桁数字の行だけ残す
+    if "年月日" not in df.columns:
+        raise ValueError("横展開形式と判定しましたが '年月日' 列が見つかりません。")
+    df = df[df["年月日"].astype(str).str.match(r"^\d{8}$")].copy()
+
+    if df.empty:
+        raise ValueError("有効なデータ行がありません（年月日が YYYYMMDD 形式の行が見つからない）。")
+
+    # 施設名の取得（ご契約名義 → なければ ご使用場所住所 → なければ '不明'）
+    facility_col = next(
+        (c for c in ["ご契約名義", "ご使用場所住所", "名称"] if c in df.columns),
+        None,
+    )
+    if facility_col:
+        facility_series = df[facility_col].astype(str).str.strip()
+    else:
+        facility_series = pd.Series(["不明"] * len(df), index=df.index)
+
+    # 30分値列の抽出
+    half_hour_cols = [c for c in df.columns if _is_30min_timeslot(c)]
+    if not half_hour_cols:
+        raise ValueError("30分値列（例: '0:00～0:30'）が見つかりません。")
+
+    # 横→縦に変換（melt）
+    work = df[["年月日"] + half_hour_cols].copy()
+    work["facility_name"] = facility_series.values
+    melted = work.melt(
+        id_vars=["年月日", "facility_name"],
+        value_vars=half_hour_cols,
+        var_name="time_slot",
+        value_name="consumption_kwh",
+    )
+
+    # datetime 列の構築（ベクトル化）
+    date_str = melted["年月日"].str.zfill(8)
+    start_h = melted["time_slot"].str.extract(r"^(\d+):")[0].astype(int).apply(lambda h: f"{h:02d}")
+    start_m = melted["time_slot"].str.extract(r"^\d+:(\d+)～")[0]
+    melted["datetime"] = pd.to_datetime(
+        date_str + " " + start_h + ":" + start_m,
+        format="%Y%m%d %H:%M",
+        errors="coerce",
+    )
+    melted["consumption_kwh"] = pd.to_numeric(melted["consumption_kwh"], errors="coerce")
+
+    result = (
+        melted[["datetime", "facility_name", "consumption_kwh"]]
+        .dropna(subset=["datetime"])
+        .sort_values("datetime")
+        .reset_index(drop=True)
+    )
+    return result
+
+
+# ---------------------------------------------------------------------------
+# 標準形式のパーサー
+# ---------------------------------------------------------------------------
+
 def _normalize(name: str) -> str:
     return str(name).strip().lower().replace(" ", "_").replace("　", "")
 
@@ -42,20 +158,28 @@ def _detect_column_mapping(
     columns: list[str],
     alias_map: dict[str, list[str]] | None = None,
 ) -> dict[str, str]:
-    """DataFrame の列名 → 標準列名 のマッピングを推測して返す。"""
     alias_map = alias_map or DEFAULT_ALIAS_MAP
     mapping: dict[str, str] = {}
     normalized_cols = {_normalize(c): c for c in columns}
-
     for std_col, aliases in alias_map.items():
         for alias in aliases:
-            key = _normalize(alias)
-            if key in normalized_cols:
-                mapping[normalized_cols[key]] = std_col
+            if _normalize(alias) in normalized_cols:
+                mapping[normalized_cols[_normalize(alias)]] = std_col
                 break
-
     return mapping
 
+
+def _parse_standard(df: pd.DataFrame) -> pd.DataFrame:
+    df = df.copy()
+    df["datetime"] = pd.to_datetime(df["datetime"], errors="coerce")
+    df["consumption_kwh"] = pd.to_numeric(df["consumption_kwh"], errors="coerce")
+    df["facility_name"] = df["facility_name"].astype(str).str.strip()
+    return df[["datetime", "facility_name", "consumption_kwh"]]
+
+
+# ---------------------------------------------------------------------------
+# 統合エントリポイント
+# ---------------------------------------------------------------------------
 
 def load_file(
     source: str | Path | io.BytesIO,
@@ -65,52 +189,56 @@ def load_file(
 ) -> tuple[pd.DataFrame, dict[str, str]]:
     """
     Excel または CSV を読み込んで標準 DataFrame を返す。
+    フォーマット（縦展開 / 横展開）は自動判定。
 
     Returns
     -------
     df : 標準化された DataFrame（datetime, facility_name, consumption_kwh）
-    applied_mapping : 実際に適用した列マッピング {元の列名: 標準列名}
+    applied_mapping : 実際に適用した列マッピング（横展開は {"format": "wide_daily"}）
     """
-    if isinstance(source, (str, Path)):
-        path = Path(source)
-        suffix = path.suffix.lower()
-    else:
-        suffix = ".xlsx"  # BytesIO はデフォルト Excel 扱い
+    is_bytes = isinstance(source, io.BytesIO)
 
+    if isinstance(source, (str, Path)):
+        suffix = Path(source).suffix.lower()
+    else:
+        suffix = ".xlsx"
+
+    # --- フォーマット判定（Excel のみ）---
     if suffix in {".xlsx", ".xls"}:
+        if is_bytes:
+            source.seek(0)
+        peek = pd.read_excel(source, sheet_name=sheet_name, dtype=str, nrows=3)
+        if is_bytes:
+            source.seek(0)
+
+        if _is_wide_daily_format(peek):
+            df = _load_wide_daily(source, sheet_name=sheet_name)
+            return df, {"format": "wide_daily"}
+
+        if is_bytes:
+            source.seek(0)
         raw = pd.read_excel(source, sheet_name=sheet_name, dtype=str)
+
     elif suffix == ".csv":
         try:
             raw = pd.read_csv(source, dtype=str, encoding=encoding)
         except UnicodeDecodeError:
-            if hasattr(source, "seek"):
+            if is_bytes:
                 source.seek(0)
             raw = pd.read_csv(source, dtype=str, encoding="shift-jis")
     else:
         raise ValueError(f"Unsupported file type: {suffix}")
 
     raw.columns = [str(c).strip() for c in raw.columns]
-
     applied_mapping = column_mapping or _detect_column_mapping(list(raw.columns))
-
     df = raw.rename(columns=applied_mapping)
 
-    # 標準列がそろっているか確認
     missing = [c for c in STANDARD_COLUMNS if c not in df.columns]
     if missing:
-        return df, applied_mapping  # 呼び出し元でマッピング補正できるよう生データを返す
+        return df, applied_mapping
 
     df = _parse_standard(df)
     return df, applied_mapping
-
-
-def _parse_standard(df: pd.DataFrame) -> pd.DataFrame:
-    """型変換・不要列の除去を行う。"""
-    df = df.copy()
-    df["datetime"] = pd.to_datetime(df["datetime"], errors="coerce")
-    df["consumption_kwh"] = pd.to_numeric(df["consumption_kwh"], errors="coerce")
-    df["facility_name"] = df["facility_name"].astype(str).str.strip()
-    return df[["datetime", "facility_name", "consumption_kwh"]]
 
 
 def merge_multiple_files(
@@ -118,10 +246,6 @@ def merge_multiple_files(
     sheet_name: int | str = 0,
     column_mappings: list[dict[str, str]] | None = None,
 ) -> tuple[pd.DataFrame, list[dict[str, str]]]:
-    """
-    複数ファイルを読み込んで縦結合する。
-    Returns merged DataFrame と各ファイルの applied_mapping リスト。
-    """
     dfs: list[pd.DataFrame] = []
     mappings: list[dict[str, str]] = []
 
@@ -134,14 +258,10 @@ def merge_multiple_files(
     if not dfs:
         return pd.DataFrame(columns=list(STANDARD_COLUMNS)), []
 
-    merged = pd.concat(dfs, ignore_index=True)
-    return merged, mappings
+    return pd.concat(dfs, ignore_index=True), mappings
 
 
 def get_column_suggestions(df: pd.DataFrame) -> dict[str, list[str]]:
-    """
-    列が自動マッピングできなかった場合に、候補一覧を返す（UI 上のセレクトボックス用）。
-    """
     return {
         "datetime": list(df.columns),
         "facility_name": list(df.columns),

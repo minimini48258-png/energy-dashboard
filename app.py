@@ -96,6 +96,11 @@ with st.sidebar:
                 st.session_state["column_mapping"] = all_mappings[0]
                 st.session_state["mapping_confirmed"] = False
 
+                # 横展開形式（東北電力CSVなど）の場合は直接クリーンへ
+                wide_count = sum(1 for m in all_mappings if m.get("format") == "wide_daily")
+                if wide_count > 0:
+                    st.info(f"📋 横展開形式（1日1行×48列）として読み込みました（{wide_count} ファイル）")
+
                 # 標準列がそろっているかチェック
                 missing = data_cleaner.validate_standard_columns(merged)
                 if missing:

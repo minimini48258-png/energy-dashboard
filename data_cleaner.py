@@ -79,8 +79,9 @@ def clean(df: pd.DataFrame, fill_missing: bool = False) -> tuple[pd.DataFrame, C
         expected = pd.Timedelta("30min")
         gaps = diffs[diffs > expected * 1.5]
         if not gaps.empty:
-            first_gap = gaps.index[0]
-            gap_start = grp_sorted.loc[first_gap - 1, "datetime"] if first_gap > 0 else "?"
+            first_gap_label = gaps.index[0]
+            pos = grp_sorted.index.get_loc(first_gap_label)
+            gap_start = grp_sorted.iloc[pos - 1]["datetime"] if pos > 0 else "?"
             report.datetime_gaps.append(
                 f"{fac}: {len(gaps)} 箇所の抜け（最初の欠落前後: {gap_start}）"
             )
