@@ -24,15 +24,32 @@ st.set_page_config(
 
 
 # ---------------------------------------------------------------------------
+# キャッシュ付きファイル読み込み
+# ファイルの中身（bytes）をキーにキャッシュするので、同じファイルを再アップロードしても再処理しない
+# ---------------------------------------------------------------------------
+
+@st.cache_data(show_spinner=False)
+def _load_and_clean(file_bytes: bytes, filename: str) -> tuple[pd.DataFrame, object, dict]:
+    buf = io.BytesIO(file_bytes)
+    df_raw, mapping = data_loader.load_file(buf)
+    missing = data_cleaner.validate_standard_columns(df_raw)
+    if missing:
+        return df_raw, None, mapping  # 手動マッピングが必要
+    df_clean, report = data_cleaner.clean(df_raw)
+    return df_clean, report, mapping
+
+
+# ---------------------------------------------------------------------------
 # セッション状態の初期化
 # ---------------------------------------------------------------------------
 
 def _init_state() -> None:
-    defaults = {
+    defaults: dict = {
         "df": None,
         "clean_report": None,
-        "column_mapping": {},
         "mapping_confirmed": False,
+        "df_raw_unmapped": None,
+        "unmapped_filename": None,
     }
     for k, v in defaults.items():
         if k not in st.session_state:
@@ -55,7 +72,7 @@ def _format_kwh(v: float) -> str:
 
 
 # ---------------------------------------------------------------------------
-# サイドバー：ファイルアップロード & 列マッピング
+# サイドバー：ファイルアップロード
 # ---------------------------------------------------------------------------
 
 with st.sidebar:
@@ -69,74 +86,76 @@ with st.sidebar:
         accept_multiple_files=True,
     )
 
+    # ファイルがアップロードされたら即時処理（ボタン不要）
     if uploaded_files:
-        if st.button("データを読み込む", type="primary"):
-            raw_dfs = []
-            all_mappings = []
-            errors = []
+        all_dfs: list[pd.DataFrame] = []
+        all_mappings: list[dict] = []
+        errors: list[str] = []
+        needs_manual_mapping = False
 
-            for f in uploaded_files:
-                try:
-                    buf = io.BytesIO(f.read())
-                    # 拡張子で suffix を上書き
-                    suffix = "." + f.name.rsplit(".", 1)[-1].lower()
-                    buf.name = f.name
-                    df_raw, mapping = data_loader.load_file(buf)
-                    raw_dfs.append(df_raw)
-                    all_mappings.append(mapping)
-                except Exception as e:
-                    errors.append(f"{f.name}: {e}")
+        for f in uploaded_files:
+            try:
+                file_bytes = f.read()
+                with st.spinner(f"読み込み中: {f.name}"):
+                    df_result, report_result, mapping = _load_and_clean(file_bytes, f.name)
 
-            if errors:
-                for e in errors:
-                    st.error(e)
-
-            if raw_dfs:
-                merged = pd.concat(raw_dfs, ignore_index=True)
-                st.session_state["column_mapping"] = all_mappings[0]
-                st.session_state["mapping_confirmed"] = False
-
-                # 横展開形式（東北電力CSVなど）の場合は直接クリーンへ
-                wide_count = sum(1 for m in all_mappings if m.get("format") == "wide_daily")
-                if wide_count > 0:
-                    st.info(f"📋 横展開形式（1日1行×48列）として読み込みました（{wide_count} ファイル）")
-
-                # 標準列がそろっているかチェック
-                missing = data_cleaner.validate_standard_columns(merged)
-                if missing:
-                    st.session_state["df_raw_unmapped"] = merged
-                    st.session_state["mapping_confirmed"] = False
-                    st.warning("列名を手動でマッピングしてください。")
+                if report_result is None:
+                    # 標準列が見つからず手動マッピングが必要
+                    st.session_state["df_raw_unmapped"] = df_result
+                    st.session_state["unmapped_filename"] = f.name
+                    needs_manual_mapping = True
                 else:
-                    df_clean, report = data_cleaner.clean(merged)
-                    st.session_state["df"] = df_clean
-                    st.session_state["clean_report"] = report
-                    st.session_state["mapping_confirmed"] = True
-                    st.success(f"✅ {len(df_clean):,} 行を読み込みました。")
+                    all_dfs.append(df_result)
+                    all_mappings.append(mapping)
+
+                    fmt = mapping.get("format", "standard")
+                    if fmt == "wide_daily":
+                        st.caption(f"📋 {f.name}：横展開形式（1日1行×48列）")
+                    else:
+                        st.caption(f"✅ {f.name}：{len(df_result):,} 行")
+
+            except Exception as e:
+                errors.append(f"{f.name}: {e}")
+
+        for e in errors:
+            st.error(e)
+
+        if all_dfs and not needs_manual_mapping:
+            merged = pd.concat(all_dfs, ignore_index=True)
+            st.session_state["df"] = merged
+            st.session_state["clean_report"] = report_result
+            st.session_state["mapping_confirmed"] = True
+            st.success(f"✅ 合計 {len(merged):,} 行を読み込みました")
+
+    # アップロードがクリアされたらリセット
+    if not uploaded_files and st.session_state.get("df") is not None:
+        if st.button("データをクリア"):
+            st.session_state["df"] = None
+            st.session_state["clean_report"] = None
+            st.session_state["mapping_confirmed"] = False
+            st.rerun()
 
     # 手動列マッピング（自動マッピング失敗時）
-    if "df_raw_unmapped" in st.session_state and not st.session_state["mapping_confirmed"]:
+    if st.session_state.get("df_raw_unmapped") is not None and not st.session_state["mapping_confirmed"]:
         st.markdown("---")
         st.subheader("🔧 列マッピング")
         raw = st.session_state["df_raw_unmapped"]
         cols = list(raw.columns)
-        hint = data_loader.get_column_suggestions(raw)
 
         sel_dt = st.selectbox("日時列 (datetime)", options=cols, index=0)
         sel_fac = st.selectbox("施設名列 (facility_name)", options=cols, index=min(1, len(cols)-1))
         sel_kwh = st.selectbox("使用量列 (consumption_kwh)", options=cols, index=min(2, len(cols)-1))
 
-        if st.button("マッピングを確定"):
-            manual_map = {sel_dt: "datetime", sel_fac: "facility_name", sel_kwh: "consumption_kwh"}
-            renamed = raw.rename(columns=manual_map)
+        if st.button("マッピングを確定", type="primary"):
+            renamed = raw.rename(columns={sel_dt: "datetime", sel_fac: "facility_name", sel_kwh: "consumption_kwh"})
             df_clean, report = data_cleaner.clean(renamed)
             st.session_state["df"] = df_clean
             st.session_state["clean_report"] = report
             st.session_state["mapping_confirmed"] = True
-            del st.session_state["df_raw_unmapped"]
+            st.session_state["df_raw_unmapped"] = None
             st.success(f"✅ {len(df_clean):,} 行を読み込みました。")
 
-    # サンプルデータ読み込み
+    # サンプルデータ
     st.markdown("---")
     if st.button("🔬 サンプルデータで試す"):
         try:
@@ -147,7 +166,7 @@ with st.sidebar:
             st.session_state["mapping_confirmed"] = True
             st.success(f"✅ サンプルデータを読み込みました（{len(df_clean):,} 行）")
         except FileNotFoundError:
-            st.error("サンプルデータが見つかりません。generate_sample.py を先に実行してください。")
+            st.error("サンプルデータが見つかりません。generate_sample.py を実行してください。")
 
 
 # ---------------------------------------------------------------------------
@@ -160,33 +179,36 @@ report = st.session_state.get("clean_report")
 if df is None:
     st.title("⚡ 電力需給分析ダッシュボード")
     st.info("👈 サイドバーからExcel / CSVをアップロードしてください。サンプルデータで動作確認もできます。")
-
     st.markdown("""
     ### 対応データ形式
+
+    **① 縦展開形式（標準）**
+
     | 列名 | 内容 | 例 |
     |------|------|----|
     | `datetime` | 日時（30分刻み） | `2024-04-01 00:00` |
     | `facility_name` | 施設名 | `市民会館` |
     | `consumption_kwh` | 使用電力量 (kWh) | `12.5` |
 
-    列名が異なる場合は読み込み後に手動でマッピングできます。
+    **② 横展開形式（東北電力等のダウンロード形式）**
+
+    1行＝1日分・30分値が48列（`0:00～0:30` … `23:30～24:00`）に並ぶ形式を自動検出します。
     """)
     st.stop()
 
-# データ品質サマリー（折りたたみ）
 if report and report.has_issues:
     with st.expander("⚠️ データ品質レポート", expanded=False):
-        cols = st.columns(4)
-        cols[0].metric("総行数", f"{report.total_rows:,}")
-        cols[1].metric("クリーン後", f"{report.rows_after:,}")
-        cols[2].metric("重複削除", f"{report.duplicate_rows:,}")
-        cols[3].metric("欠損値", f"{report.missing_consumption:,}")
+        c = st.columns(4)
+        c[0].metric("総行数", f"{report.total_rows:,}")
+        c[1].metric("クリーン後", f"{report.rows_after:,}")
+        c[2].metric("重複削除", f"{report.duplicate_rows:,}")
+        c[3].metric("欠損値", f"{report.missing_consumption:,}")
         if report.datetime_gaps:
             st.warning("**タイムスタンプの欠落:**\n" + "\n".join(f"- {g}" for g in report.datetime_gaps))
 
 
 # ---------------------------------------------------------------------------
-# フィルタ UI（ページ上部）
+# フィルタ UI
 # ---------------------------------------------------------------------------
 
 st.title("⚡ 電力需給分析ダッシュボード")
@@ -198,11 +220,7 @@ date_max = df["datetime"].max().date()
 col_f, col_p, col_agg = st.columns([2, 2, 1])
 
 with col_f:
-    selected_facilities = st.multiselect(
-        "施設を選択",
-        options=facilities,
-        default=facilities,
-    )
+    selected_facilities = st.multiselect("施設を選択", options=facilities, default=facilities)
 
 with col_p:
     period_option = st.selectbox(
@@ -231,17 +249,12 @@ with col_p:
         ) + timedelta(days=1) - timedelta(seconds=1)
 
 with col_agg:
-    agg_mode = st.radio(
-        "集計単位",
-        options=["施設別", "全施設合計"],
-        index=0,
-    )
+    agg_mode = st.radio("集計単位", options=["施設別", "全施設合計"], index=0)
 
 if not selected_facilities:
     st.warning("施設を1つ以上選択してください。")
     st.stop()
 
-# フィルタ適用
 filtered = analyzer.filter_by_period(
     analyzer.filter_by_facilities(df, selected_facilities),
     start_dt, end_dt,
@@ -267,73 +280,49 @@ st.markdown("---")
 
 
 # ---------------------------------------------------------------------------
-# タブ構成
+# タブ
 # ---------------------------------------------------------------------------
 
 tab_demand, tab_pattern, tab_supply = st.tabs(["📈 需要カーブ", "📊 需要パターン分析", "⚡ 需給バランス（準備中）"])
 
-
-# ---------- 需要カーブ タブ ----------
 with tab_demand:
     by_fac = agg_mode == "施設別"
-
     ts_data = analyzer.aggregate_30min(filtered, by_facility=by_fac)
-    fig_ts = visualizer.demand_timeseries(
-        ts_data,
-        title=f"電力使用量（30分値）— {period_option}",
+    st.plotly_chart(
+        visualizer.demand_timeseries(ts_data, title=f"電力使用量（30分値）— {period_option}"),
+        use_container_width=True,
     )
-    st.plotly_chart(fig_ts, use_container_width=True)
 
-
-# ---------- 需要パターン分析 タブ ----------
 with tab_pattern:
     by_fac_pat = agg_mode == "施設別"
-
     col_l, col_r = st.columns(2)
 
     with col_l:
-        monthly = analyzer.aggregate_monthly(filtered, by_facility=by_fac_pat)
         st.plotly_chart(
-            visualizer.monthly_bar(monthly, by_facility=by_fac_pat),
+            visualizer.monthly_bar(analyzer.aggregate_monthly(filtered, by_facility=by_fac_pat), by_facility=by_fac_pat),
             use_container_width=True,
         )
-
     with col_r:
-        hourly = analyzer.aggregate_hourly_avg(filtered, by_facility=by_fac_pat)
         st.plotly_chart(
-            visualizer.hourly_avg_bar(hourly, by_facility=by_fac_pat),
+            visualizer.hourly_avg_bar(analyzer.aggregate_hourly_avg(filtered, by_facility=by_fac_pat), by_facility=by_fac_pat),
             use_container_width=True,
         )
 
     col_l2, col_r2 = st.columns(2)
-
     with col_l2:
-        wd = analyzer.weekday_vs_holiday(filtered)
-        st.plotly_chart(visualizer.weekday_holiday_line(wd), use_container_width=True)
-
+        st.plotly_chart(visualizer.weekday_holiday_line(analyzer.weekday_vs_holiday(filtered)), use_container_width=True)
     with col_r2:
-        ranking = analyzer.facility_annual_ranking(filtered)
-        st.plotly_chart(visualizer.facility_ranking_bar(ranking), use_container_width=True)
+        st.plotly_chart(visualizer.facility_ranking_bar(analyzer.facility_annual_ranking(filtered)), use_container_width=True)
 
-    # 日別使用量（全幅）
-    daily = analyzer.aggregate_daily(filtered, by_facility=by_fac_pat)
     st.plotly_chart(
-        visualizer.daily_bar(daily, by_facility=by_fac_pat),
+        visualizer.daily_bar(analyzer.aggregate_daily(filtered, by_facility=by_fac_pat), by_facility=by_fac_pat),
         use_container_width=True,
     )
 
-
-# ---------- 需給バランス タブ ----------
 with tab_supply:
     st.info("""
     **このタブは次フェーズで実装します。**
 
-    追加予定の機能：
-    - 太陽光・蓄電池・市場調達・その他電源の入力（CSV or 画面入力）
-    - 需要カーブと供給カーブの重ね合わせ
-    - 余剰・不足量の表示
-    - 電源構成比（円グラフ）
-
-    `analyzer.py` の `calc_supply_demand_balance()` / `supply_mix_summary()` と
-    `visualizer.py` の `supply_demand_chart()` / `supply_mix_pie()` は実装済みです。
+    追加予定：太陽光・蓄電池・市場調達の入力 → 需給バランス・電源構成比グラフ
+    （`analyzer.py` の `calc_supply_demand_balance()` / `visualizer.py` の `supply_demand_chart()` は実装済み）
     """)
