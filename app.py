@@ -367,10 +367,11 @@ if not filtered_fac:
     st.warning("施設を1つ以上選択してください。")
     st.stop()
 
-filtered = analyzer.filter_by_period(
-    analyzer.filter_by_facilities(df, filtered_fac),
-    start_dt, end_dt,
-)
+# 施設フィルタのみ（日付フィルタなし）→ パターン分析の分析期間選択に使う
+filtered_base = analyzer.filter_by_facilities(df, filtered_fac)
+
+# 需要カーブ用：施設 + 表示期間フィルタ
+filtered = analyzer.filter_by_period(filtered_base, start_dt, end_dt)
 
 if filtered.empty:
     st.warning("選択した期間・施設にデータがありません。")
@@ -379,7 +380,8 @@ if filtered.empty:
 # グループ列を付与（グループ合計モード用）
 if agg_mode == "グループ合計" and group_mode != "施設個別":
     group_col = "region" if group_mode == "地域別" else "function_type"
-    filtered = grouping.add_group_column(filtered, group_df, group_col)
+    filtered      = grouping.add_group_column(filtered,      group_df, group_col)
+    filtered_base = grouping.add_group_column(filtered_base, group_df, group_col)
 
 
 # ---------------------------------------------------------------------------
@@ -430,12 +432,45 @@ with tab_demand:
 
 
 with tab_pattern:
-    by_fac = _by_fac(filtered)
+    # ── 分析期間セレクタ（需要カーブの表示期間とは独立） ──
+    p_col1, p_col2 = st.columns([2, 4])
+    with p_col1:
+        pat_period = st.selectbox(
+            "分析期間",
+            options=["全データ期間", "直近1年", "直近6か月", "直近3か月", "表示期間と同じ"],
+            index=0,
+            key="pat_period",
+        )
+    _bmax = filtered_base["datetime"].max()
+    _bmin = filtered_base["datetime"].min()
+    if pat_period == "全データ期間":
+        pat_df = filtered_base.copy()
+    elif pat_period == "直近1年":
+        pat_df = analyzer.filter_by_period(filtered_base, _bmax - timedelta(days=365), _bmax)
+    elif pat_period == "直近6か月":
+        pat_df = analyzer.filter_by_period(filtered_base, _bmax - timedelta(days=180), _bmax)
+    elif pat_period == "直近3か月":
+        pat_df = analyzer.filter_by_period(filtered_base, _bmax - timedelta(days=90), _bmax)
+    else:  # 表示期間と同じ
+        pat_df = filtered.copy()
 
-    # パターン分析では facility_name を使う（グループ合計モードでも group_label → facility_name として扱う）
-    pat_df = filtered.copy()
+    with p_col2:
+        st.caption(
+            f"分析対象: {pat_df['datetime'].min().strftime('%Y/%m/%d')} 〜 "
+            f"{pat_df['datetime'].max().strftime('%Y/%m/%d')}  "
+            f"（{len(pat_df):,} 行）"
+        )
+
+    if pat_df.empty:
+        st.warning("選択した分析期間にデータがありません。")
+        st.stop()
+
+    # グループ合計モード時は group_label を facility_name として扱う
     if "group_label" in pat_df.columns:
+        pat_df = pat_df.copy()
         pat_df["facility_name"] = pat_df["group_label"]
+
+    by_fac = _by_fac(pat_df)
 
     col_l, col_r = st.columns(2)
     with col_l:
