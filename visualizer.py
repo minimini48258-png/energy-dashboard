@@ -207,3 +207,172 @@ def supply_mix_pie(mix_df: pd.DataFrame) -> go.Figure:
     fig.update_traces(textinfo="percent+label")
     fig.update_layout(margin=dict(l=20, r=20, t=50, b=20))
     return fig
+
+
+# ---------------------------------------------------------------------------
+# PPA シミュレーション
+# ---------------------------------------------------------------------------
+
+def solar_supply_chart(
+    sim_df: pd.DataFrame,
+    title: str = "需給バランス（太陽光・蓄電池導入後）",
+) -> go.Figure:
+    """
+    太陽光＋蓄電池シミュレーション結果の需給バランスを積み上げ棒グラフで表示。
+    7日以内: 30分値、それ以降: 日別集計に自動切替。
+    """
+    n_days = (sim_df["datetime"].max() - sim_df["datetime"].min()).days
+
+    if n_days <= 7:
+        plot_df = sim_df.copy()
+        x_col, x_label, unit = "datetime", "日時", "kWh/30min"
+    else:
+        plot_df = sim_df.copy()
+        plot_df["date"] = plot_df["datetime"].dt.date
+        plot_df = plot_df.groupby("date", as_index=False).agg(
+            direct_use_kwh=("direct_use_kwh", "sum"),
+            battery_discharge_kwh=("battery_discharge_kwh", "sum"),
+            grid_import_kwh=("grid_import_kwh", "sum"),
+            solar_kwh=("solar_kwh", "sum"),
+            demand_kwh=("demand_kwh", "sum"),
+        )
+        plot_df["date"] = pd.to_datetime(plot_df["date"])
+        x_col, x_label, unit = "date", "日付", "kWh/日"
+
+    fig = go.Figure()
+    fig.add_trace(go.Bar(
+        x=plot_df[x_col], y=plot_df["grid_import_kwh"],
+        name="グリッド買電", marker_color="#EC7063", opacity=0.85,
+    ))
+    fig.add_trace(go.Bar(
+        x=plot_df[x_col], y=plot_df["battery_discharge_kwh"],
+        name="蓄電池放電", marker_color="#5DADE2", opacity=0.85,
+    ))
+    fig.add_trace(go.Bar(
+        x=plot_df[x_col], y=plot_df["direct_use_kwh"],
+        name="太陽光直接消費", marker_color="#F4D03F", opacity=0.85,
+    ))
+    fig.add_trace(go.Scatter(
+        x=plot_df[x_col], y=plot_df["demand_kwh"],
+        mode="lines", name="需要",
+        line=dict(color="black", width=2),
+    ))
+    fig.add_trace(go.Scatter(
+        x=plot_df[x_col], y=plot_df["solar_kwh"],
+        mode="lines", name="太陽光発電",
+        line=dict(color="#E67E22", width=1.5, dash="dash"),
+    ))
+    fig.update_layout(
+        barmode="stack",
+        title=title,
+        xaxis_title=x_label,
+        yaxis_title=f"電力量 ({unit})",
+        hovermode="x unified",
+        margin=dict(l=20, r=20, t=50, b=20),
+        legend=dict(orientation="h", yanchor="bottom", y=1.02, xanchor="right", x=1),
+    )
+    return fig
+
+
+def battery_operation_chart(
+    sim_df: pd.DataFrame,
+    battery_capacity_kwh: float = 0.0,
+    title: str = "蓄電池 充放電・残量推移",
+) -> go.Figure:
+    """
+    蓄電池の充電（正）・放電（負）棒グラフと SOC 折れ線を重ねて表示。
+    7日以内: 30分値、それ以降: 日別集計。
+    """
+    n_days = (sim_df["datetime"].max() - sim_df["datetime"].min()).days
+
+    if n_days <= 7:
+        plot_df = sim_df.copy()
+        x_col, x_label, unit = "datetime", "日時", "kWh/30min"
+    else:
+        plot_df = sim_df.copy()
+        plot_df["date"] = plot_df["datetime"].dt.date
+        plot_df = plot_df.groupby("date", as_index=False).agg(
+            battery_charge_kwh=("battery_charge_kwh", "sum"),
+            battery_discharge_kwh=("battery_discharge_kwh", "sum"),
+            battery_soc_kwh=("battery_soc_kwh", "mean"),
+        )
+        plot_df["date"] = pd.to_datetime(plot_df["date"])
+        x_col, x_label, unit = "date", "日付", "kWh/日"
+
+    fig = go.Figure()
+    fig.add_trace(go.Bar(
+        x=plot_df[x_col], y=plot_df["battery_charge_kwh"],
+        name="充電", marker_color="#58D68D", opacity=0.75,
+    ))
+    fig.add_trace(go.Bar(
+        x=plot_df[x_col], y=-plot_df["battery_discharge_kwh"],
+        name="放電", marker_color="#5DADE2", opacity=0.75,
+    ))
+    fig.add_trace(go.Scatter(
+        x=plot_df[x_col], y=plot_df["battery_soc_kwh"],
+        mode="lines", name="残量 (SOC)",
+        line=dict(color="#8E44AD", width=2),
+        yaxis="y2",
+    ))
+
+    y2_max = battery_capacity_kwh * 1.05 if battery_capacity_kwh > 0 else None
+    fig.update_layout(
+        barmode="relative",
+        title=title,
+        xaxis_title=x_label,
+        yaxis_title=f"充放電量 ({unit})",
+        yaxis2=dict(
+            title="残量 (kWh)",
+            overlaying="y",
+            side="right",
+            showgrid=False,
+            range=[0, y2_max] if y2_max else None,
+        ),
+        hovermode="x unified",
+        margin=dict(l=20, r=20, t=50, b=20),
+        legend=dict(orientation="h", yanchor="bottom", y=1.02, xanchor="right", x=1),
+    )
+    return fig
+
+
+def monthly_self_consumption_bar(
+    sim_df: pd.DataFrame,
+    title: str = "月別 自家消費率・自給率",
+) -> go.Figure:
+    """月別の自家消費率（発電量ベース）と自給率（需要ベース）を棒グラフで表示。"""
+    monthly = sim_df.copy()
+    monthly["month"] = monthly["datetime"].dt.to_period("M").dt.to_timestamp()
+    monthly = monthly.groupby("month", as_index=False).agg(
+        solar_kwh=("solar_kwh", "sum"),
+        direct_use_kwh=("direct_use_kwh", "sum"),
+        battery_discharge_kwh=("battery_discharge_kwh", "sum"),
+        demand_kwh=("demand_kwh", "sum"),
+    )
+    monthly["solar_consumed"] = monthly["direct_use_kwh"] + monthly["battery_discharge_kwh"]
+    solar_safe = monthly["solar_kwh"].replace(0, float("nan"))
+    demand_safe = monthly["demand_kwh"].replace(0, float("nan"))
+    monthly["自家消費率"] = (monthly["solar_consumed"] / solar_safe * 100).round(1)
+    monthly["自給率"]    = (monthly["solar_consumed"] / demand_safe * 100).round(1)
+    monthly["month_str"] = monthly["month"].dt.strftime("%Y-%m")
+
+    fig = go.Figure()
+    fig.add_trace(go.Bar(
+        x=monthly["month_str"], y=monthly["自家消費率"],
+        name="自家消費率（発電のうち自家消費した割合）",
+        marker_color="#F4D03F", opacity=0.85,
+    ))
+    fig.add_trace(go.Bar(
+        x=monthly["month_str"], y=monthly["自給率"],
+        name="自給率（需要のうち太陽光で賄えた割合）",
+        marker_color="#5DADE2", opacity=0.85,
+    ))
+    fig.update_layout(
+        barmode="group",
+        title=title,
+        xaxis_title="月",
+        yaxis=dict(title="割合 (%)", range=[0, 100]),
+        hovermode="x unified",
+        margin=dict(l=20, r=20, t=50, b=20),
+        legend=dict(orientation="h", yanchor="bottom", y=1.02, xanchor="right", x=1),
+    )
+    return fig

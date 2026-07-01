@@ -16,6 +16,7 @@ import cache_manager
 import data_cleaner
 import data_loader
 import grouping
+import solar_simulator
 import visualizer
 
 st.set_page_config(
@@ -404,7 +405,7 @@ st.markdown("---")
 # ---------------------------------------------------------------------------
 
 tab_demand, tab_pattern, tab_supply = st.tabs(
-    ["📈 需要カーブ", "📊 需要パターン分析", "⚡ 需給バランス（準備中）"]
+    ["📈 需要カーブ", "📊 需要パターン分析", "☀️ PPAシミュレーション"]
 )
 
 
@@ -503,8 +504,117 @@ with tab_pattern:
 
 
 with tab_supply:
-    st.info("""
-    **このタブは次フェーズで実装します。**
+    st.subheader("☀️ 太陽光＋蓄電池 PPA シミュレーション")
+    st.caption(
+        "実際の需要データを使い、太陽光・蓄電池を導入した場合の自家消費率と蓄電池稼働を試算します。"
+        "（日射量モデル：上田市周辺 NEDO 概算値）"
+    )
 
-    追加予定：太陽光・蓄電池・市場調達の入力 → 需給バランス・電源構成比グラフ
-    """)
+    # ── パラメータ設定 ──────────────────────────────────────────────────────
+    with st.container(border=True):
+        st.markdown("**導入パラメータ**")
+        col_p1, col_p2, col_p3, col_p4 = st.columns(4)
+        with col_p1:
+            sim_solar_kw = st.number_input(
+                "太陽光容量 (kWp)", min_value=1.0, max_value=5000.0,
+                value=100.0, step=10.0, key="sim_solar_kw",
+                help="パネルの定格出力（kWp）。100 kWp 程度から試してください。",
+            )
+        with col_p2:
+            sim_battery_kwh = st.number_input(
+                "蓄電池容量 (kWh)", min_value=0.0, max_value=50000.0,
+                value=0.0, step=10.0, key="sim_battery_kwh_input",
+                help="0 の場合は蓄電池なし（太陽光のみ）のシミュレーションになります。",
+            )
+        with col_p3:
+            sim_battery_eff = st.slider(
+                "充放電往復効率 (%)", min_value=70, max_value=99,
+                value=95, key="sim_battery_eff",
+                help="蓄電池の充電→放電の往復効率。リチウムイオンは 90〜97 % 程度。",
+            ) / 100.0
+        with col_p4:
+            sim_period = st.selectbox(
+                "分析期間", ["全データ期間", "直近1年", "直近6か月", "直近3か月"],
+                key="sim_period",
+                help="KPI・月別グラフの集計範囲。需要カーブの表示期間とは独立しています。",
+            )
+
+        run_sim = st.button("▶ シミュレーション実行", type="primary")
+
+    # ── 分析期間データの選択 ────────────────────────────────────────────────
+    _bmax_sim = filtered_base["datetime"].max()
+    _sim_period_map = {
+        "全データ期間": filtered_base,
+        "直近1年":   analyzer.filter_by_period(filtered_base, _bmax_sim - timedelta(days=365), _bmax_sim),
+        "直近6か月": analyzer.filter_by_period(filtered_base, _bmax_sim - timedelta(days=180), _bmax_sim),
+        "直近3か月": analyzer.filter_by_period(filtered_base, _bmax_sim - timedelta(days=90),  _bmax_sim),
+    }
+    sim_base_df = _sim_period_map[sim_period]
+
+    # ── シミュレーション実行 ─────────────────────────────────────────────────
+    if run_sim:
+        with st.spinner("シミュレーション計算中..."):
+            _sim_result = solar_simulator.run_simulation(
+                sim_base_df,
+                solar_capacity_kw=sim_solar_kw,
+                battery_capacity_kwh=sim_battery_kwh,
+                battery_efficiency=sim_battery_eff,
+            )
+        st.session_state["ppa_sim_result"]      = _sim_result
+        st.session_state["ppa_sim_battery_kwh"] = sim_battery_kwh
+
+    ppa_sim: pd.DataFrame | None = st.session_state.get("ppa_sim_result")
+
+    if ppa_sim is None:
+        st.info("パラメータを設定し「▶ シミュレーション実行」を押してください。")
+    else:
+        kpis = solar_simulator.calc_kpis(ppa_sim)
+
+        # ── KPI ─────────────────────────────────────────────────────────────
+        st.markdown("#### 📊 シミュレーション結果")
+        k1, k2, k3, k4, k5 = st.columns(5)
+        k1.metric(
+            "自家消費率",
+            f"{kpis['self_consumption_rate']:.1f}%",
+            help="発電量のうち自家消費（直接＋蓄電池経由）した割合",
+        )
+        k2.metric(
+            "自給率",
+            f"{kpis['self_sufficiency_rate']:.1f}%",
+            help="総需要のうち太陽光＋蓄電池で賄えた割合",
+        )
+        k3.metric("発電量（期間合計）", _fmt(kpis["total_solar_kwh"]))
+        k4.metric("グリッド買電削減量", _fmt(kpis["grid_reduction_kwh"]))
+        k5.metric("グリッド買電削減率", f"{kpis['grid_reduction_rate']:.1f}%")
+
+        st.markdown("---")
+
+        # ── 表示期間でフィルタ（時系列グラフ用）────────────────────────────
+        sim_disp = ppa_sim[
+            (ppa_sim["datetime"] >= start_dt) & (ppa_sim["datetime"] <= end_dt)
+        ]
+        if sim_disp.empty:
+            sim_disp = ppa_sim
+
+        period_label = f"{start_dt.strftime('%Y/%m/%d')} 〜 {end_dt.strftime('%Y/%m/%d')}"
+        st.caption(f"📅 以下の時系列グラフは需要カーブの表示期間（{period_label}）を使用しています。")
+
+        # ── 需給バランスグラフ ────────────────────────────────────────────────
+        st.plotly_chart(
+            visualizer.solar_supply_chart(sim_disp),
+            use_container_width=True,
+        )
+
+        # ── 蓄電池グラフ（蓄電池あり時のみ）────────────────────────────────
+        _stored_battery = st.session_state.get("ppa_sim_battery_kwh", 0)
+        if _stored_battery > 0:
+            st.plotly_chart(
+                visualizer.battery_operation_chart(sim_disp, battery_capacity_kwh=_stored_battery),
+                use_container_width=True,
+            )
+
+        # ── 月別自家消費率（分析期間全体）───────────────────────────────────
+        st.plotly_chart(
+            visualizer.monthly_self_consumption_bar(ppa_sim),
+            use_container_width=True,
+        )
