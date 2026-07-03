@@ -683,7 +683,7 @@ with tab_supply:
         _mode_label  = solar_simulator.BATTERY_MODE_LABELS.get(_stored_mode, _stored_mode)
 
         st.markdown(f"#### シミュレーション結果　｜　モード: {_mode_label}")
-        k1, k2, k3, k4, k5 = st.columns(5)
+        k1, k2, k3 = st.columns(3)
         k1.metric(
             "自家消費率", f"{kpis['self_consumption_rate']:.1f}%",
             help="発電量のうち自家消費（直接＋蓄電池経由）した割合",
@@ -693,8 +693,14 @@ with tab_supply:
             help="総需要のうち太陽光＋蓄電池で賄えた割合",
         )
         k3.metric("発電量（期間合計）", _fmt(kpis["total_solar_kwh"]))
+
+        k4, k5, k6 = st.columns(3)
         k4.metric("グリッド買電削減量", _fmt(kpis["grid_reduction_kwh"]))
         k5.metric("グリッド買電削減率", f"{kpis['grid_reduction_rate']:.1f}%")
+        k6.metric(
+            "系統への売電量", _fmt(kpis["total_grid_export_kwh"]),
+            help="蓄電池に入りきらなかった余剰太陽光が系統へ流れた量",
+        )
 
         st.markdown("---")
 

@@ -233,6 +233,7 @@ def solar_supply_chart(
             direct_use_kwh=("direct_use_kwh", "sum"),
             battery_discharge_kwh=("battery_discharge_kwh", "sum"),
             grid_import_kwh=("grid_import_kwh", "sum"),
+            grid_export_kwh=("grid_export_kwh", "sum"),
             solar_kwh=("solar_kwh", "sum"),
             demand_kwh=("demand_kwh", "sum"),
         )
@@ -240,6 +241,8 @@ def solar_supply_chart(
         x_col, x_label, unit = "date", "日付", "kWh/日"
 
     fig = go.Figure()
+
+    # ── 需要側（正方向）: 積み上げ棒グラフ ──────────────────────────────────
     fig.add_trace(go.Bar(
         x=plot_df[x_col], y=plot_df["grid_import_kwh"],
         name="グリッド買電", marker_color="#EC7063", opacity=0.85,
@@ -252,6 +255,14 @@ def solar_supply_chart(
         x=plot_df[x_col], y=plot_df["direct_use_kwh"],
         name="太陽光直接消費", marker_color="#F4D03F", opacity=0.85,
     ))
+
+    # ── 余剰側（負方向）: 売電 ───────────────────────────────────────────────
+    fig.add_trace(go.Bar(
+        x=plot_df[x_col], y=-plot_df["grid_export_kwh"],
+        name="系統への売電", marker_color="#A569BD", opacity=0.85,
+    ))
+
+    # ── 折れ線 ───────────────────────────────────────────────────────────────
     fig.add_trace(go.Scatter(
         x=plot_df[x_col], y=plot_df["demand_kwh"],
         mode="lines", name="需要",
@@ -262,11 +273,12 @@ def solar_supply_chart(
         mode="lines", name="太陽光発電",
         line=dict(color="#E67E22", width=1.5, dash="dash"),
     ))
+
     fig.update_layout(
         barmode="stack",
         title=title,
         xaxis_title=x_label,
-        yaxis_title=f"電力量 ({unit})",
+        yaxis_title=f"電力量 ({unit})　※負 = 売電",
         hovermode="x unified",
         margin=dict(l=20, r=20, t=50, b=20),
         legend=dict(orientation="h", yanchor="bottom", y=1.02, xanchor="right", x=1),
