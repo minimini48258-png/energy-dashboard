@@ -232,6 +232,7 @@ def solar_supply_chart(
         plot_df = plot_df.groupby("date", as_index=False).agg(
             direct_use_kwh=("direct_use_kwh", "sum"),
             battery_discharge_kwh=("battery_discharge_kwh", "sum"),
+            battery_charge_kwh=("battery_charge_kwh", "sum"),
             grid_import_kwh=("grid_import_kwh", "sum"),
             grid_export_kwh=("grid_export_kwh", "sum"),
             solar_kwh=("solar_kwh", "sum"),
@@ -242,7 +243,7 @@ def solar_supply_chart(
 
     fig = go.Figure()
 
-    # ── 需要側（正方向）: 積み上げ棒グラフ ──────────────────────────────────
+    # ── 需要側（0より上）: 積み上げ棒グラフ ─────────────────────────────────
     fig.add_trace(go.Bar(
         x=plot_df[x_col], y=plot_df["grid_import_kwh"],
         name="グリッド買電", marker_color="#EC7063", opacity=0.85,
@@ -256,7 +257,11 @@ def solar_supply_chart(
         name="太陽光直接消費", marker_color="#F4D03F", opacity=0.85,
     ))
 
-    # ── 余剰側（負方向）: 売電 ───────────────────────────────────────────────
+    # ── 余剰側（0より下）: 蓄電池充電・売電 ─────────────────────────────────
+    fig.add_trace(go.Bar(
+        x=plot_df[x_col], y=-plot_df["battery_charge_kwh"],
+        name="蓄電池充電", marker_color="#58D68D", opacity=0.85,
+    ))
     fig.add_trace(go.Bar(
         x=plot_df[x_col], y=-plot_df["grid_export_kwh"],
         name="系統への売電", marker_color="#A569BD", opacity=0.85,
@@ -275,10 +280,13 @@ def solar_supply_chart(
     ))
 
     fig.update_layout(
-        barmode="stack",
+        barmode="relative",   # 正は0から上、負は0から下に正しく展開
         title=title,
         xaxis_title=x_label,
-        yaxis_title=f"電力量 ({unit})　※負 = 売電",
+        yaxis=dict(
+            title=f"電力量 ({unit})",
+            zeroline=True, zerolinewidth=2, zerolinecolor="gray",
+        ),
         hovermode="x unified",
         margin=dict(l=20, r=20, t=50, b=20),
         legend=dict(orientation="h", yanchor="bottom", y=1.02, xanchor="right", x=1),
