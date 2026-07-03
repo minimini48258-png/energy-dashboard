@@ -24,22 +24,30 @@ _SUNSET: dict[int, float] = {
     7: 19.2, 8: 18.7, 9: 17.8, 10: 17.0, 11: 16.5, 12: 16.5,
 }
 
+# 充放電モードの表示名
+BATTERY_MODE_LABELS: dict[str, str] = {
+    "basic":     "🔋 自家消費優先（基本）",
+    "reserve":   "🚨 防災バッファ付き",
+    "peak_cut":  "⚡ ピークカット",
+}
+
 
 def _solar_kwh_per_kwp(hour_float: float, month: int) -> float:
-    """
-    kWp あたりの発電量（kWh/30分枠）を返す。
-    正弦波近似で日照時間内を配分し、月別 PSH で正規化。
-    """
+    """kWp あたりの発電量（kWh/30分枠）を返す。正弦波近似＋月別PSHで正規化。"""
     sr = _SUNRISE[month]
     ss = _SUNSET[month]
     if hour_float < sr or hour_float >= ss:
         return 0.0
     daylight_h = ss - sr
-    # 正弦波の積分 = daylight_h * 2/π → ピーク係数を逆算
     peak_kw = _DAILY_PSH[month] * np.pi / (2.0 * daylight_h)
     progress = (hour_float - sr) / daylight_h
-    # 0.5h 分の発電量 (kWh) を返す
     return float(peak_kw * np.sin(np.pi * progress) * 0.5)
+
+
+def auto_peak_threshold_kw(df: pd.DataFrame) -> float:
+    """需要の80パーセンタイルをデマンド閾値（kW）として返す。"""
+    agg = df.groupby("datetime", as_index=False)["consumption_kwh"].sum()
+    return round(float(agg["consumption_kwh"].quantile(0.80)) * 2, 1)
 
 
 def run_simulation(
@@ -48,6 +56,9 @@ def run_simulation(
     battery_capacity_kwh: float,
     battery_efficiency: float = 0.95,
     panel_pr: float = 0.85,
+    mode: str = "basic",
+    min_soc_pct: float = 30.0,
+    peak_threshold_kw: float | None = None,
 ) -> pd.DataFrame:
     """
     太陽光 + 蓄電池シミュレーションを実行する。
@@ -59,6 +70,12 @@ def run_simulation(
     battery_capacity_kwh : 蓄電池容量 (kWh)。0 の場合は蓄電池なし。
     battery_efficiency : 充放電往復効率（デフォルト 0.95）
     panel_pr : パネル性能比（温度・配線損失等、デフォルト 0.85）
+    mode : 充放電モード
+        "basic"    — 余剰太陽光で充電・不足時に自動放電（デフォルト）
+        "reserve"  — 防災バッファ付き。min_soc_pct 以上を常時確保。
+        "peak_cut" — デマンドが peak_threshold_kw を超えたときのみ放電。
+    min_soc_pct : reserve モードで確保する最低残量 (%)
+    peak_threshold_kw : peak_cut モードのデマンド閾値 (kW)。None で自動計算。
 
     Returns
     -------
@@ -74,8 +91,19 @@ def run_simulation(
         .reset_index(drop=True)
     )
 
-    # 片道効率（往復効率の平方根）
-    eta = float(battery_efficiency) ** 0.5
+    eta = float(battery_efficiency) ** 0.5  # 片道効率
+
+    # モード別の事前計算
+    reserve_floor_kwh = (
+        battery_capacity_kwh * min_soc_pct / 100.0 if mode == "reserve" else 0.0
+    )
+    if mode == "peak_cut":
+        if peak_threshold_kw is None:
+            peak_threshold_kw = auto_peak_threshold_kw(df)
+        # kW → kWh/30min スロット
+        peak_threshold_slot = peak_threshold_kw / 2.0
+    else:
+        peak_threshold_slot = 0.0
 
     soc = 0.0
     records: list[dict] = []
@@ -88,15 +116,14 @@ def run_simulation(
 
         solar = solar_capacity_kw * _solar_kwh_per_kwp(hour_f, month) * panel_pr
 
-        # 自家消費（太陽光直接使用）
+        # ── 自家消費（太陽光直接使用）──────────────────────────────────────
         direct_use = min(solar, demand)
         surplus = solar - direct_use   # 余剰太陽光 (kWh)
         deficit = demand - direct_use  # 残需要 (kWh)
 
-        # 余剰 → 蓄電池チャージ
+        # ── 余剰 → 蓄電池チャージ（全モード共通：太陽光余剰のみ充電）──────
         if battery_capacity_kwh > 0 and surplus > 0:
             space = battery_capacity_kwh - soc
-            # 空き容量に格納するために必要な AC 入力量
             max_ac_in = space / eta if eta > 0 else 0.0
             charge_ac = min(surplus, max_ac_in)
             charge_stored = charge_ac * eta
@@ -106,10 +133,19 @@ def run_simulation(
             charge_stored = 0.0
             grid_export = surplus
 
-        # 不足 → 蓄電池放電
+        # ── 不足 → 蓄電池放電（モード別）──────────────────────────────────
         if battery_capacity_kwh > 0 and deficit > 0:
-            max_ac_out = soc * eta
-            discharge_ac = min(deficit, max_ac_out)
+            # 放電可能な SOC（reserve モード: フロアを除いた分のみ使用可）
+            usable_soc = max(0.0, soc - reserve_floor_kwh)
+
+            # 放電量の目標（peak_cut: 閾値超過分のみ / その他: deficit 全量）
+            if mode == "peak_cut":
+                discharge_needed = max(0.0, deficit - peak_threshold_slot)
+            else:
+                discharge_needed = deficit
+
+            max_ac_out = usable_soc * eta
+            discharge_ac = min(discharge_needed, max_ac_out)
             discharge_stored = discharge_ac / eta if eta > 0 else 0.0
             soc = max(0.0, soc - discharge_stored)
             grid_import = deficit - discharge_ac
@@ -162,3 +198,82 @@ def calc_kpis(sim_df: pd.DataFrame) -> dict:
         "grid_reduction_kwh": round(grid_reduction_kwh, 1),
         "grid_reduction_rate": round(grid_reduction_rate * 100, 1),
     }
+
+
+def sweep_battery_capacity(
+    df: pd.DataFrame,
+    solar_capacity_kw: float,
+    battery_efficiency: float = 0.95,
+    panel_pr: float = 0.85,
+    mode: str = "basic",
+    min_soc_pct: float = 30.0,
+    peak_threshold_kw: float | None = None,
+    n_steps: int = 12,
+) -> tuple[pd.DataFrame, float]:
+    """
+    蓄電池容量を変えてシミュレーションし、自家消費率・自給率の変化を返す。
+
+    peak_cut モードのとき peak_threshold_kw が None なら自動計算し固定値として使用。
+
+    Returns
+    -------
+    sweep_df : battery_kwh, self_consumption_rate, self_sufficiency_rate の DataFrame
+    recommended_kwh : 推奨蓄電池容量 (kWh)
+    """
+    # peak_cut の閾値を先に確定（全ステップで同じ値を使う）
+    if mode == "peak_cut" and peak_threshold_kw is None:
+        peak_threshold_kw = auto_peak_threshold_kw(df)
+
+    # 蓄電池なしで1回シミュレーションし、日次余剰電力を推定
+    sim0 = run_simulation(
+        df, solar_capacity_kw, 0, battery_efficiency, panel_pr,
+        mode, min_soc_pct, peak_threshold_kw,
+    )
+    n_days = max(1, (sim0["datetime"].max() - sim0["datetime"].min()).days)
+    daily_surplus = (
+        float(sim0["solar_kwh"].sum()) - float(sim0["direct_use_kwh"].sum())
+    ) / n_days
+
+    if daily_surplus <= 0:
+        # 太陽光が需要より少ない場合は単純スイープ（solar容量ベース）
+        daily_surplus = solar_capacity_kw * 3.0 / n_steps
+
+    # テスト容量リスト: 0 から 日次余剰 × 2.5 まで
+    max_cap = daily_surplus * 2.5
+    step_vals = np.linspace(daily_surplus * 0.15, max_cap, n_steps - 1)
+    capacities = [0.0] + [round(float(v), 1) for v in step_vals]
+
+    results = []
+    for cap in capacities:
+        sim = run_simulation(
+            df, solar_capacity_kw, cap, battery_efficiency, panel_pr,
+            mode, min_soc_pct, peak_threshold_kw,
+        )
+        kpis = calc_kpis(sim)
+        results.append({
+            "battery_kwh": cap,
+            "self_consumption_rate": kpis["self_consumption_rate"],
+            "self_sufficiency_rate": kpis["self_sufficiency_rate"],
+        })
+
+    sweep_df = pd.DataFrame(results)
+    recommended_kwh = _find_elbow(sweep_df)
+    return sweep_df, recommended_kwh
+
+
+def _find_elbow(sweep_df: pd.DataFrame) -> float:
+    """
+    自給率カーブの肘（限界効果逓減点）を探す。
+    10 kWh あたりの自給率改善が 0.5% 未満になった最初の手前の容量を返す。
+    """
+    for i in range(1, len(sweep_df)):
+        delta_rate = (
+            sweep_df["self_sufficiency_rate"].iloc[i]
+            - sweep_df["self_sufficiency_rate"].iloc[i - 1]
+        )
+        delta_cap = (
+            sweep_df["battery_kwh"].iloc[i] - sweep_df["battery_kwh"].iloc[i - 1]
+        )
+        if delta_cap > 0 and (delta_rate / delta_cap * 10) < 0.5:
+            return float(sweep_df["battery_kwh"].iloc[i - 1])
+    return float(sweep_df["battery_kwh"].iloc[-1])

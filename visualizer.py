@@ -335,6 +335,49 @@ def battery_operation_chart(
     return fig
 
 
+def battery_sweep_chart(
+    sweep_df: pd.DataFrame,
+    recommended_kwh: float,
+    title: str = "蓄電池容量と自給率の関係（適正容量診断）",
+) -> go.Figure:
+    """
+    容量スイープ結果を折れ線で表示し、推奨容量を縦線でマークする。
+    sweep_df: battery_kwh, self_consumption_rate, self_sufficiency_rate
+    """
+    fig = go.Figure()
+    fig.add_trace(go.Scatter(
+        x=sweep_df["battery_kwh"], y=sweep_df["self_sufficiency_rate"],
+        mode="lines+markers", name="自給率",
+        line=dict(color="#5DADE2", width=2.5),
+        marker=dict(size=7),
+    ))
+    fig.add_trace(go.Scatter(
+        x=sweep_df["battery_kwh"], y=sweep_df["self_consumption_rate"],
+        mode="lines+markers", name="自家消費率",
+        line=dict(color="#F4D03F", width=2.5),
+        marker=dict(size=7),
+    ))
+
+    if recommended_kwh > 0:
+        fig.add_vline(
+            x=recommended_kwh,
+            line=dict(color="#E74C3C", dash="dash", width=2),
+            annotation_text=f"推奨容量: {recommended_kwh:.0f} kWh",
+            annotation_position="top right",
+            annotation_font_color="#E74C3C",
+        )
+
+    fig.update_layout(
+        title=title,
+        xaxis_title="蓄電池容量 (kWh)",
+        yaxis=dict(title="割合 (%)", range=[0, 100]),
+        hovermode="x unified",
+        margin=dict(l=20, r=20, t=50, b=20),
+        legend=dict(orientation="h", yanchor="bottom", y=1.02, xanchor="right", x=1),
+    )
+    return fig
+
+
 def monthly_self_consumption_bar(
     sim_df: pd.DataFrame,
     title: str = "月別 自家消費率・自給率",
