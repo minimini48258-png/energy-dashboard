@@ -11,7 +11,7 @@ from pathlib import Path
 
 import pandas as pd
 
-GROUPS_FILE = Path("data/groups.json")
+GROUPS_FILE = Path("/tmp/energy_dashboard/groups.json")
 
 FUNCTION_KEYWORDS: dict[str, list[str]] = {
     "行政": ["役場", "庁舎", "市役所", "町役場", "村役場", "区役所", "支所", "出張所", "行政"],

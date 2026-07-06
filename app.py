@@ -69,7 +69,7 @@ def _process_files(uploaded_files) -> None:
         prog.progress(i / len(uploaded_files), text=f"読み込み中: {f.name}")
         try:
             buf = io.BytesIO(f.read())
-            df_raw, mapping = data_loader.load_file(buf)
+            df_raw, mapping = data_loader.load_file(buf, filename=f.name)
             missing = data_cleaner.validate_standard_columns(df_raw)
             if missing:
                 st.session_state["df_raw_unmapped"] = df_raw
@@ -80,7 +80,12 @@ def _process_files(uploaded_files) -> None:
             df_clean["facility_name"] = df_clean["facility_name"].astype(object)
             all_dfs.append(df_clean)
 
-            label = "横展開（1日1行×48列）" if mapping.get("format") == "wide_daily" else "標準形式"
+            fmt = mapping.get("format", "")
+            label = (
+                "横展開（東北電力等）" if fmt == "wide_daily"
+                else "エナリス形式" if fmt == "enaris"
+                else "標準形式"
+            )
             st.sidebar.caption(f"✅ {f.name}：{len(df_clean):,} 行 / {label}")
         except Exception as e:
             errors.append(f"{f.name}: {e}")
@@ -92,8 +97,10 @@ def _process_files(uploaded_files) -> None:
 
     if all_dfs:
         merged = pd.concat(all_dfs, ignore_index=True)
-        # ディスクキャッシュに保存
-        cache_manager.save(merged, [f.name for f in uploaded_files])
+        try:
+            cache_manager.save(merged, [f.name for f in uploaded_files])
+        except Exception:
+            pass  # Cloud環境等でキャッシュ保存失敗しても処理継続
         st.session_state["df"] = merged
         st.session_state["mapping_confirmed"] = True
         st.session_state["loaded_file_ids"] = current_ids
