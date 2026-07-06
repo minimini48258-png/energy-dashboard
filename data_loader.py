@@ -139,7 +139,9 @@ def _load_enaris(source: Any, filename: str = "不明", sheet_name: int | str = 
     )
 
     date_part = pd.to_datetime(melted["年月日"], errors="coerce").dt.strftime("%Y-%m-%d")
-    start_time = melted["time_slot"].str.extract(r"^(\d+:\d+)～")[0]
+    # 時間を2桁ゼロパディング（pandas 2.x は %H が2桁必須）
+    _ts = melted["time_slot"].str.extract(r"^(\d+):(\d+)～", expand=True)
+    start_time = _ts[0].str.zfill(2) + ":" + _ts[1]
     melted["datetime"] = pd.to_datetime(
         date_part + " " + start_time,
         format="%Y-%m-%d %H:%M",

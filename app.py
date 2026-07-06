@@ -271,8 +271,13 @@ with st.expander("🏷 グループ管理（施設の地域・機能種別を編
 
 st.title("⚡ 電力需給分析ダッシュボード")
 
-date_min: date = df["datetime"].min().date()
-date_max: date = df["datetime"].max().date()
+_dt_min = df["datetime"].dropna().min()
+_dt_max = df["datetime"].dropna().max()
+if pd.isna(_dt_min) or pd.isna(_dt_max):
+    st.error("日時データが読み取れませんでした。ファイル形式を確認してください。")
+    st.stop()
+date_min: date = _dt_min.date()
+date_max: date = _dt_max.date()
 
 # ── グルーピングモード ──
 col_gm, col_gs = st.columns([1, 3])
