@@ -329,25 +329,28 @@ if period_option == "カスタム":
 else:
     delta = period_delta_map[period_option]
 
+    # データ期間が delta より短い場合でも min_value <= max_value になるようクランプ
+    _nav_min = min(date_min + delta, date_max)
+
     # セッション状態の nav_end_date が有効範囲に収まるよう補正
     nav_end = st.session_state.get("nav_end_date") or date_max
-    nav_end = max(date_min + delta, min(nav_end, date_max))
+    nav_end = max(_nav_min, min(nav_end, date_max))
 
     with col_nav:
         c1, c2, c3, c4 = st.columns([1, 1, 4, 1])
         with c1:
             if st.button("◀◀", help="データの先頭へ"):
-                nav_end = date_min + delta
+                nav_end = _nav_min
                 st.session_state["nav_end_date"] = nav_end
         with c2:
             if st.button("◀", help="前の期間へ"):
-                nav_end = max(date_min + delta, nav_end - delta)
+                nav_end = max(_nav_min, nav_end - delta)
                 st.session_state["nav_end_date"] = nav_end
         with c3:
             nav_end = st.date_input(
                 "表示終了日",
                 value=nav_end,
-                min_value=date_min + delta,
+                min_value=_nav_min,
                 max_value=date_max,
                 label_visibility="collapsed",
                 key="nav_date_input",
