@@ -84,7 +84,7 @@ def _is_wide_daily_format(peek: pd.DataFrame) -> bool:
 
 def _is_30min_timeslot(col: str) -> bool:
     """列名が 30 分間隔の時間帯を表すか判定（例: '0:00～0:30', '23:30～24:00'）。
-    ～ のUnicode差異（U+FF5E/U+301C）を吸収するため [^\d:] で任意1文字を許容する。
+    ~ のUnicode差異（U+FF5E/U+301C）を吸収するため [^\\d:] で任意1文字を許容する。
     """
     m = re.match(r"^(\d+):(\d+)[^\d:](\d+):(\d+)$", str(col).strip())
     if not m:
@@ -162,20 +162,24 @@ def _load_enaris(source: Any, filename: str = "不明", sheet_name: int | str = 
 
 
 # ---------------------------------------------------------------------------
-# 横展開形式のパーサー（東北電力）
+# 横展開形式のパーサー（東北電力・統合フォーマット共通）
 # ---------------------------------------------------------------------------
 
-def _load_wide_daily(source: Any, sheet_name: int | str = 0) -> pd.DataFrame:
+def _load_wide_daily(source: Any, sheet_name: int | str = 0, header: int = 1) -> pd.DataFrame:
     """
     1行1日・30分値横展開形式のExcelを読み込み、標準長形式に変換する。
 
-    想定カラム：
+    header=1: 東北電力形式（行0がタイトル、行1が列ヘッダー）
+    header=0: 統合フォーマット等（行0が直接列ヘッダー）
+
+    対応カラム：
       年月日（YYYYMMDD）/ ご契約名義 / ... / 0:00～0:30 ～ 23:30～24:00 / 備考
+      ※ 1時間値列（0:00～1:00 等）が混在していても 30分値列だけ抽出する
     """
-    df = pd.read_excel(source, sheet_name=sheet_name, header=1, dtype=str)
+    df = pd.read_excel(source, sheet_name=sheet_name, header=header, dtype=str)
     df.columns = [str(c).strip() for c in df.columns]
 
-    # タイトル行（download_siyouryo… 等）を除去：年月日が8桁数字の行だけ残す
+    # 年月日が8桁数字の行だけ残す（タイトル行・空行の除去）
     if "年月日" not in df.columns:
         raise ValueError("横展開形式と判定しましたが '年月日' 列が見つかりません。")
     df = df[df["年月日"].astype(str).str.match(r"^\d{8}$")].copy()
@@ -183,17 +187,18 @@ def _load_wide_daily(source: Any, sheet_name: int | str = 0) -> pd.DataFrame:
     if df.empty:
         raise ValueError("有効なデータ行がありません（年月日が YYYYMMDD 形式の行が見つからない）。")
 
-    # 施設名の取得（ご契約名義 → なければ ご使用場所住所 → なければ '不明'）
+    # 施設名の取得（ご契約名義 → ご使用場所住所 → '不明'）
     facility_col = next(
         (c for c in ["ご契約名義", "ご使用場所住所", "名称"] if c in df.columns),
         None,
     )
-    if facility_col:
-        facility_series = df[facility_col].astype(str).str.strip()
-    else:
-        facility_series = pd.Series(["不明"] * len(df), index=df.index)
+    facility_series = (
+        df[facility_col].astype(str).str.strip()
+        if facility_col
+        else pd.Series(["不明"] * len(df), index=df.index)
+    )
 
-    # 30分値列の抽出
+    # 30分値列のみ抽出（1時間値列は除外）
     half_hour_cols = [c for c in df.columns if _is_30min_timeslot(c)]
     if not half_hour_cols:
         raise ValueError("30分値列（例: '0:00～0:30'）が見つかりません。")
@@ -208,10 +213,10 @@ def _load_wide_daily(source: Any, sheet_name: int | str = 0) -> pd.DataFrame:
         value_name="consumption_kwh",
     )
 
-    # datetime 列の構築（ベクトル化）
+    # datetime 列の構築（～ のUnicode差異を [^\d:] で吸収）
     date_str = melted["年月日"].str.zfill(8)
     start_h = melted["time_slot"].str.extract(r"^(\d+):")[0].astype(int).apply(lambda h: f"{h:02d}")
-    start_m = melted["time_slot"].str.extract(r"^\d+:(\d+)～")[0]
+    start_m = melted["time_slot"].str.extract(r"^\d+:(\d+)[^\d:]")[0]
     melted["datetime"] = pd.to_datetime(
         date_str + " " + start_h + ":" + start_m,
         format="%Y%m%d %H:%M",
@@ -219,13 +224,12 @@ def _load_wide_daily(source: Any, sheet_name: int | str = 0) -> pd.DataFrame:
     )
     melted["consumption_kwh"] = pd.to_numeric(melted["consumption_kwh"], errors="coerce")
 
-    result = (
+    return (
         melted[["datetime", "facility_name", "consumption_kwh"]]
         .dropna(subset=["datetime"])
         .sort_values("datetime")
         .reset_index(drop=True)
     )
-    return result
 
 
 # ---------------------------------------------------------------------------
@@ -302,7 +306,10 @@ def load_file(
             return df, {"format": "enaris"}
 
         if _is_wide_daily_format(peek):
-            df = _load_wide_daily(source, sheet_name=sheet_name)
+            # peek.columns に 年月日 があれば header=0（統合フォーマット等）、
+            # なければ peek.iloc[0] に 年月日 があるケース（東北電力：header=1）
+            _wide_header = 0 if "年月日" in peek.columns.astype(str).tolist() else 1
+            df = _load_wide_daily(source, sheet_name=sheet_name, header=_wide_header)
             return df, {"format": "wide_daily"}
 
         if is_bytes:
