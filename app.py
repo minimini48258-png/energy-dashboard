@@ -6,6 +6,7 @@ app.py
 from __future__ import annotations
 
 import io
+import re
 from datetime import date, timedelta
 
 import pandas as pd
@@ -166,6 +167,17 @@ with st.sidebar:
         st.subheader("🔧 列マッピング")
         raw = st.session_state["df_raw_unmapped"]
         cols = list(raw.columns)
+
+        # 横展開・エナリス形式の誤検出を案内
+        _has_time_cols = any(re.search(r"\d+:\d+", c) for c in cols)
+        _has_nenmgd = "年月日" in cols
+        if _has_nenmgd and _has_time_cols:
+            st.warning(
+                "⚠️ このファイルは横展開形式（1行＝1日・30分値×48列）の可能性があります。"
+                " 手動マッピングでは正しく読み込めません。"
+                " ファイル形式をご確認ください（東北電力 / エナリス形式）。"
+            )
+
         sel_dt  = st.selectbox("日時列",   options=cols, index=0)
         sel_fac = st.selectbox("施設名列", options=cols, index=min(1, len(cols)-1))
         sel_kwh = st.selectbox("使用量列", options=cols, index=min(2, len(cols)-1))

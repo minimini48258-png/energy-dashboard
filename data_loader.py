@@ -48,10 +48,12 @@ DEFAULT_ALIAS_MAP: dict[str, list[str]] = {
 # ---------------------------------------------------------------------------
 
 def _is_enaris_format(peek: pd.DataFrame) -> bool:
-    """エナリス形式の判定: 行0がヘッダーで 年月日 列と HH:MM～HH:MM(kWh) 形式の時間帯列がある。"""
+    """エナリス形式の判定: 行0がヘッダーで 年月日 列と HH:MM～HH:MM(kWh) 形式の時間帯列がある。
+    ～ 文字のUnicodeコード差異（U+FF5E/U+301C）を吸収するため (kWh) suffix で判定する。
+    """
     col_strs = peek.columns.astype(str).tolist()
     return "年月日" in col_strs and any(
-        re.match(r"^\d+:\d+～\d+:\d+\(kWh\)$", c) for c in col_strs
+        re.match(r"^\d+:\d+.+\d+:\d+\(kWh\)$", c) for c in col_strs
     )
 
 
@@ -74,15 +76,17 @@ def _is_wide_daily_format(peek: pd.DataFrame) -> bool:
 
     # ケース2: 既に正しいヘッダーで読まれていて、列名に 年月日 と 時間帯列が混在
     col_strs = peek.columns.astype(str).tolist()
-    if "年月日" in col_strs and any("～" in c for c in col_strs):
+    if "年月日" in col_strs and any(re.search(r"\d+:\d+.\d+:\d+", c) for c in col_strs):
         return True
 
     return False
 
 
 def _is_30min_timeslot(col: str) -> bool:
-    """列名が 30 分間隔の時間帯を表すか判定（例: '0:00～0:30', '23:30～24:00'）。"""
-    m = re.match(r"^(\d+):(\d+)～(\d+):(\d+)$", str(col).strip())
+    """列名が 30 分間隔の時間帯を表すか判定（例: '0:00～0:30', '23:30～24:00'）。
+    ～ のUnicode差異（U+FF5E/U+301C）を吸収するため [^\d:] で任意1文字を許容する。
+    """
+    m = re.match(r"^(\d+):(\d+)[^\d:](\d+):(\d+)$", str(col).strip())
     if not m:
         return False
     h1, m1, h2, m2 = int(m.group(1)), int(m.group(2)), int(m.group(3)), int(m.group(4))
@@ -125,7 +129,7 @@ def _load_enaris(source: Any, filename: str = "不明", sheet_name: int | str = 
 
     facility_name = _extract_facility_from_filename(filename)
 
-    half_hour_cols = [c for c in df.columns if re.match(r"^\d+:\d+～\d+:\d+\(kWh\)$", c)]
+    half_hour_cols = [c for c in df.columns if re.match(r"^\d+:\d+.+\d+:\d+\(kWh\)$", c)]
     if not half_hour_cols:
         raise ValueError("エナリス形式: 30分値列（例: '0:00～0:30(kWh)'）が見つかりません。")
 
