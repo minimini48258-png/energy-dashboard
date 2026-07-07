@@ -715,17 +715,13 @@ def _supply_for_period(start: date, end: date) -> pd.DataFrame | None:
 with tab_demand:
     period_label = f"{start_dt.strftime('%Y/%m/%d')} 〜 {end_dt.strftime('%Y/%m/%d')}"
     _chart_supply = _supply_for_period(start_dt, end_dt)
+    st.plotly_chart(
+        visualizer.demand_timeseries(_ts_data(filtered), title=f"電力使用量（30分値）— {period_label}"),
+        use_container_width=True,
+    )
     if _chart_supply is not None:
         st.plotly_chart(
-            visualizer.demand_supply_timeseries(
-                _ts_data(filtered), _chart_supply,
-                title=f"需要 vs 供給（30分値）— {period_label}",
-            ),
-            use_container_width=True,
-        )
-    else:
-        st.plotly_chart(
-            visualizer.demand_timeseries(_ts_data(filtered), title=f"電力使用量（30分値）— {period_label}"),
+            visualizer.supply_timeseries(_chart_supply, title=f"発電量（30分値）— {period_label}"),
             use_container_width=True,
         )
 

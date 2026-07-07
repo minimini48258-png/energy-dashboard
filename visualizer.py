@@ -453,6 +453,38 @@ SOURCE_PALETTE = [
 ]
 
 
+def supply_timeseries(
+    supply_df: pd.DataFrame,
+    title: str = "発電量（30分値）",
+    y_label: str = "発電量 (kWh/30min)",
+) -> go.Figure:
+    """
+    電源別供給量の折れ線グラフ（複数電源は色分け）。
+    supply_df: datetime / source_name / supply_kwh
+    """
+    fig = go.Figure()
+    for i, src in enumerate(sorted(supply_df["source_name"].unique())):
+        src_data = supply_df[supply_df["source_name"] == src].sort_values("datetime")
+        fig.add_trace(go.Scatter(
+            x=src_data["datetime"],
+            y=src_data["supply_kwh"],
+            name=src,
+            line=dict(width=1.5, color=SOURCE_PALETTE[i % len(SOURCE_PALETTE)]),
+            mode="lines",
+            fill="tozeroy",
+            opacity=0.7,
+        ))
+    fig.update_layout(
+        title=title,
+        xaxis_title="日時",
+        yaxis_title=y_label,
+        hovermode="x unified",
+        margin=dict(l=20, r=20, t=50, b=20),
+        legend=dict(orientation="h", yanchor="bottom", y=1.02, xanchor="right", x=1),
+    )
+    return fig
+
+
 def demand_supply_timeseries(
     demand_df: pd.DataFrame,
     supply_df: pd.DataFrame,
