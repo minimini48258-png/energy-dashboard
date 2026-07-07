@@ -20,6 +20,7 @@ import data_loader
 import financial_model
 import grouping
 import solar_simulator
+import supply_loader
 import supply_planner
 import visualizer
 
@@ -43,8 +44,11 @@ _DEFAULTS: dict = {
     "loaded_filenames": [],
     "nav_end_date": None,
     "custom_groups": {},
-    "supply_sources": [],      # list[SupplySource] as dicts
+    "supply_sources": [],        # list[SupplySource] as dicts（パラメータ設定電源）
     "editing_source_idx": None,  # None=非編集, -1=新規追加, int=編集中インデックス
+    "supply_df": None,           # アップロード済み供給データ DataFrame
+    "supply_filenames": [],      # アップロード済みファイル名リスト
+    "loaded_supply_file_ids": set(),
 }
 for _k, _v in _DEFAULTS.items():
     if _k not in st.session_state:
@@ -138,6 +142,49 @@ with st.sidebar:
         st.session_state["df"] = None
         st.session_state["mapping_confirmed"] = False
         st.session_state["loaded_file_ids"] = set()
+
+    # ── 供給データアップロード ─────────────────────────────
+    st.markdown("---")
+    st.header("⚡ 供給データ読み込み")
+    uploaded_supply = st.file_uploader(
+        "供給側 Excel をアップロード（複数可）",
+        type=["xlsx", "xls"],
+        accept_multiple_files=True,
+        key="supply_uploader",
+    )
+    if uploaded_supply:
+        supply_ids = {f.file_id for f in uploaded_supply}
+        if supply_ids != st.session_state["loaded_supply_file_ids"] or st.session_state["supply_df"] is None:
+            supply_dfs, supply_names, supply_errors = [], [], []
+            for f in uploaded_supply:
+                try:
+                    buf = io.BytesIO(f.read())
+                    sdf, sname = supply_loader.load_supply_file(buf, filename=f.name)
+                    supply_dfs.append(sdf)
+                    supply_names.append(sname)
+                    st.sidebar.caption(f"✅ {f.name}：{len(sdf):,} 行 / {sname}")
+                except Exception as e:
+                    supply_errors.append(f"{f.name}: {e}")
+            for e in supply_errors:
+                st.sidebar.error(e)
+            if supply_dfs:
+                merged_supply = pd.concat(supply_dfs, ignore_index=True)
+                st.session_state["supply_df"] = merged_supply
+                st.session_state["supply_filenames"] = supply_names
+                st.session_state["loaded_supply_file_ids"] = supply_ids
+    elif st.session_state["supply_df"] is not None and st.session_state["loaded_supply_file_ids"]:
+        st.session_state["supply_df"] = None
+        st.session_state["supply_filenames"] = []
+        st.session_state["loaded_supply_file_ids"] = set()
+
+    if st.session_state["supply_df"] is not None:
+        sdf = st.session_state["supply_df"]
+        srcs = sorted(sdf["source_name"].unique())
+        st.sidebar.caption(
+            f"電源: {', '.join(srcs)}  |  "
+            f"{sdf['datetime'].min().strftime('%Y/%m/%d')} 〜 "
+            f"{sdf['datetime'].max().strftime('%Y/%m/%d')}"
+        )
 
     # ── 保存済みデータ ────────────────────────────────────
     entries = cache_manager.list_entries()
@@ -686,15 +733,21 @@ with tab_pattern:
 with tab_balance:
     st.subheader("⚡ 需給バランス分析")
 
-    sources_for_balance = [
-        supply_planner.SupplySource(**s)
-        for s in st.session_state.get("supply_sources", [])
-    ]
+    # 供給データの統合（アップロード実データ + パラメータ設定）
+    _bal_supply_parts = []
+    _uploaded_supply = st.session_state.get("supply_df")
+    if _uploaded_supply is not None:
+        _bal_supply_parts.append(_uploaded_supply)
+    _param_sources = [supply_planner.SupplySource(**s) for s in st.session_state.get("supply_sources", [])]
 
-    if not sources_for_balance:
-        st.info("「電源管理」で供給電源を登録すると需給バランスが表示されます。")
+    if not _bal_supply_parts and not _param_sources:
+        st.info(
+            "供給データがありません。\n\n"
+            "- **実データ**: サイドバーの「供給データ読み込み」から Excel をアップロード\n"
+            "- **推計値**: 「電源管理」Expander でパラメータ設定"
+        )
     else:
-        # 分析期間セレクタ（パターン分析と同じ構造）
+        # 分析期間セレクタ
         bc1, bc2 = st.columns([2, 4])
         with bc1:
             bal_period = st.selectbox(
@@ -720,24 +773,40 @@ with tab_balance:
                 f"（{len(bal_df_demand):,} 行）"
             )
 
-        # 供給プロファイル生成
+        # パラメータ設定電源のプロファイルを追加
         bal_timestamps = pd.DatetimeIndex(bal_df_demand["datetime"].sort_values().unique())
-        bal_supply_df  = supply_planner.combine_supply_profiles(sources_for_balance, bal_timestamps)
-        balance_df     = financial_model.calc_balance(bal_df_demand, bal_supply_df)
-        source_names   = [s.name for s in sources_for_balance]
-        kpis           = financial_model.calc_balance_kpis(balance_df)
+        if _param_sources:
+            _bal_supply_parts.append(
+                supply_planner.combine_supply_profiles(_param_sources, bal_timestamps)
+            )
+        bal_supply_df = (
+            pd.concat(_bal_supply_parts, ignore_index=True)
+            if _bal_supply_parts
+            else pd.DataFrame(columns=["datetime", "source_name", "supply_kwh"])
+        )
+
+        # 需給バランス計算
+        balance_df   = financial_model.calc_balance(bal_df_demand, bal_supply_df)
+        source_names = sorted(bal_supply_df["source_name"].unique().tolist())
+        kpis         = financial_model.calc_balance_kpis(balance_df)
+
+        # 供給データソースの表示
+        uploaded_names = sorted(_uploaded_supply["source_name"].unique()) if _uploaded_supply is not None else []
+        param_names    = [s.name for s in _param_sources]
+        if uploaded_names:
+            st.caption(f"📂 実データ: {', '.join(uploaded_names)}")
+        if param_names:
+            st.caption(f"⚙️ 推計値: {', '.join(param_names)}")
 
         # KPI
         k1, k2, k3, k4, k5 = st.columns(5)
-        k1.metric("総需要",     f"{kpis['total_demand_kwh']/1000:.1f} MWh")
-        k2.metric("自社供給",   f"{kpis['total_supply_kwh']/1000:.1f} MWh")
-        k3.metric("自給率",     f"{kpis['self_sufficiency_pct']:.1f} %")
+        k1.metric("総需要",       f"{kpis['total_demand_kwh']/1000:.1f} MWh")
+        k2.metric("自社供給",     f"{kpis['total_supply_kwh']/1000:.1f} MWh")
+        k3.metric("自給率",       f"{kpis['self_sufficiency_pct']:.1f} %")
         k4.metric("余剰（売電可）", f"{kpis['surplus_kwh']/1000:.1f} MWh")
         k5.metric("不足（JEPX）",  f"{kpis['deficit_kwh']/1000:.1f} MWh")
 
         st.markdown("---")
-
-        # 需給バランスグラフ
         st.plotly_chart(
             visualizer.supply_demand_balance_chart(balance_df, source_names),
             use_container_width=True,
@@ -747,13 +816,14 @@ with tab_balance:
 with tab_pnl:
     st.subheader("💰 収支シミュレーション")
 
-    sources_for_pnl = [
-        supply_planner.SupplySource(**s)
-        for s in st.session_state.get("supply_sources", [])
-    ]
+    _pnl_supply_parts = []
+    _pnl_uploaded = st.session_state.get("supply_df")
+    if _pnl_uploaded is not None:
+        _pnl_supply_parts.append(_pnl_uploaded)
+    sources_for_pnl = [supply_planner.SupplySource(**s) for s in st.session_state.get("supply_sources", [])]
 
-    if not sources_for_pnl:
-        st.info("「電源管理」で供給電源を登録すると収支シミュレーションが実行できます。")
+    if not _pnl_supply_parts and not sources_for_pnl:
+        st.info("サイドバーから供給データをアップロードするか、「電源管理」で電源を登録してください。")
     else:
         # ── 価格設定 ────────────────────────────────────────────────────────
         with st.container(border=True):
@@ -820,8 +890,16 @@ with tab_pnl:
 
         if st.button("▶ 収支シミュレーション実行", type="primary"):
             with st.spinner("計算中..."):
-                _pnl_ts      = pd.DatetimeIndex(pnl_demand_df["datetime"].sort_values().unique())
-                _pnl_supply  = supply_planner.combine_supply_profiles(sources_for_pnl, _pnl_ts)
+                _pnl_ts = pd.DatetimeIndex(pnl_demand_df["datetime"].sort_values().unique())
+                if sources_for_pnl:
+                    _pnl_supply_parts.append(
+                        supply_planner.combine_supply_profiles(sources_for_pnl, _pnl_ts)
+                    )
+                _pnl_supply = (
+                    pd.concat(_pnl_supply_parts, ignore_index=True)
+                    if _pnl_supply_parts
+                    else pd.DataFrame(columns=["datetime", "source_name", "supply_kwh"])
+                )
                 _pnl_balance = financial_model.calc_balance(pnl_demand_df, _pnl_supply)
                 _pnl_df      = financial_model.calc_pnl(
                     _pnl_balance, _pnl_supply, source_costs,
