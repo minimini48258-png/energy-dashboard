@@ -719,11 +719,30 @@ with tab_demand:
         visualizer.demand_timeseries(_ts_data(filtered), title=f"電力使用量（30分値）— {period_label}"),
         use_container_width=True,
     )
-    if _chart_supply is not None:
-        st.plotly_chart(
-            visualizer.supply_timeseries(_chart_supply, title=f"発電量（30分値）— {period_label}"),
-            use_container_width=True,
-        )
+
+    _sdf_raw = st.session_state.get("supply_df")
+    _sel_names = st.session_state.get("selected_supply_names", [])
+
+    if _sdf_raw is not None:
+        if not _sel_names:
+            # selected_supply_names が空の場合は全電源を自動設定
+            _sel_names = sorted(_sdf_raw["source_name"].unique().tolist())
+            st.session_state["selected_supply_names"] = _sel_names
+            _chart_supply = _supply_for_period(start_dt, end_dt)
+
+        if _chart_supply is not None and not _chart_supply.empty:
+            st.plotly_chart(
+                visualizer.supply_timeseries(_chart_supply, title=f"発電量（30分値）— {period_label}"),
+                use_container_width=True,
+            )
+        else:
+            _s_min = _sdf_raw["datetime"].min().strftime("%Y/%m/%d")
+            _s_max = _sdf_raw["datetime"].max().strftime("%Y/%m/%d")
+            st.info(
+                f"供給データ期間（{_s_min} 〜 {_s_max}）が"
+                f"現在の表示期間（{period_label}）と重なっていません。"
+                "日付ナビゲーションで表示期間を供給データの期間に合わせてください。"
+            )
 
 
 with tab_pattern:
