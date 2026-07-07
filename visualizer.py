@@ -439,3 +439,144 @@ def monthly_self_consumption_bar(
         legend=dict(orientation="h", yanchor="bottom", y=1.02, xanchor="right", x=1),
     )
     return fig
+
+
+# ---------------------------------------------------------------------------
+# 需給バランスチャート（電源別積み上げ＋需要線）
+# ---------------------------------------------------------------------------
+
+SOURCE_PALETTE = [
+    "#2E86AB", "#A23B72", "#F18F01", "#3BB273", "#7B2D8B",
+    "#E94F37", "#44BBA4", "#E8C547",
+]
+
+
+def supply_demand_balance_chart(
+    balance_df: pd.DataFrame,
+    source_names: list[str],
+    title: str = "需給バランス（30分値）",
+) -> go.Figure:
+    """
+    電源別供給量（積み上げバー）＋JEPX調達（不足分）＋需要（折れ線）。
+    balance_df には電源名の列が展開済みであること。
+    """
+    fig = go.Figure()
+
+    for i, src in enumerate(source_names):
+        if src not in balance_df.columns:
+            continue
+        fig.add_trace(go.Bar(
+            x=balance_df["datetime"],
+            y=balance_df[src],
+            name=src,
+            marker_color=SOURCE_PALETTE[i % len(SOURCE_PALETTE)],
+            opacity=0.85,
+        ))
+
+    fig.add_trace(go.Bar(
+        x=balance_df["datetime"],
+        y=balance_df["deficit_kwh"],
+        name="JEPX調達（不足分）",
+        marker_color="#FF6B6B",
+        opacity=0.75,
+    ))
+
+    fig.add_trace(go.Scatter(
+        x=balance_df["datetime"],
+        y=balance_df["demand_kwh"],
+        name="総需要",
+        line=dict(color="#1A1A1A", width=2),
+        mode="lines",
+    ))
+
+    fig.update_layout(
+        barmode="stack",
+        title=title,
+        xaxis_title="日時",
+        yaxis_title="電力量 (kWh/30min)",
+        hovermode="x unified",
+        margin=dict(l=20, r=20, t=50, b=20),
+        legend=dict(orientation="h", yanchor="bottom", y=1.02, xanchor="right", x=1),
+    )
+    return fig
+
+
+# ---------------------------------------------------------------------------
+# 月別P&Lチャート
+# ---------------------------------------------------------------------------
+
+def monthly_pnl_chart(
+    monthly_df: pd.DataFrame,
+    title: str = "月別 収支シミュレーション（万円）",
+) -> go.Figure:
+    """収入（正）・コスト（負）の積み上げバー＋利益折れ線。"""
+    df = monthly_df.copy()
+    df["month_str"] = df["month"].dt.strftime("%Y-%m")
+    scale = 10_000  # 円 → 万円
+
+    fig = go.Figure()
+
+    fig.add_trace(go.Bar(
+        x=df["month_str"], y=df["retail_revenue"] / scale,
+        name="小売収入", marker_color="#2E86AB", opacity=0.9,
+    ))
+    fig.add_trace(go.Bar(
+        x=df["month_str"], y=df.get("surplus_revenue", 0) / scale,
+        name="余剰売電", marker_color="#A8DADC", opacity=0.9,
+    ))
+    fig.add_trace(go.Bar(
+        x=df["month_str"], y=-df["gen_cost"] / scale,
+        name="発電コスト", marker_color="#F4A261", opacity=0.85,
+    ))
+    fig.add_trace(go.Bar(
+        x=df["month_str"], y=-df["procurement_cost"] / scale,
+        name="JEPX調達コスト", marker_color="#E76F51", opacity=0.85,
+    ))
+    fig.add_trace(go.Bar(
+        x=df["month_str"], y=-df["inbalance_cost"] / scale,
+        name="インバランスコスト", marker_color="#C73E1D", opacity=0.85,
+    ))
+    fig.add_trace(go.Scatter(
+        x=df["month_str"], y=df["profit"] / scale,
+        name="事業利益",
+        line=dict(color="#1A1A1A", width=3),
+        mode="lines+markers",
+        marker=dict(size=6),
+    ))
+
+    fig.update_layout(
+        barmode="relative",
+        title=title,
+        xaxis_title="月",
+        yaxis_title="万円",
+        hovermode="x unified",
+        margin=dict(l=20, r=20, t=50, b=20),
+        legend=dict(orientation="h", yanchor="bottom", y=1.02, xanchor="right", x=1),
+    )
+    return fig
+
+
+# ---------------------------------------------------------------------------
+# 時間帯別出力パターンチャート
+# ---------------------------------------------------------------------------
+
+def hourly_pattern_bar(
+    hourly_pct: list[float],
+    source_name: str = "電源",
+) -> go.Figure:
+    """24時間の出力比率を棒グラフで表示。"""
+    hours = [f"{h:02d}:00" for h in range(24)]
+    fig = go.Figure(go.Bar(
+        x=hours,
+        y=hourly_pct,
+        marker_color="#2E86AB",
+        opacity=0.8,
+    ))
+    fig.update_layout(
+        title=f"{source_name}：時間帯別出力比（%）",
+        xaxis_title="時間帯",
+        yaxis=dict(title="出力比 (%)", range=[0, 110]),
+        margin=dict(l=20, r=20, t=50, b=20),
+        height=220,
+    )
+    return fig

@@ -7,6 +7,7 @@ from __future__ import annotations
 
 import io
 import re
+from dataclasses import asdict
 from datetime import date, timedelta
 
 import pandas as pd
@@ -16,8 +17,10 @@ import analyzer
 import cache_manager
 import data_cleaner
 import data_loader
+import financial_model
 import grouping
 import solar_simulator
+import supply_planner
 import visualizer
 
 st.set_page_config(
@@ -38,8 +41,10 @@ _DEFAULTS: dict = {
     "df_raw_unmapped": None,
     "loaded_file_ids": set(),
     "loaded_filenames": [],
-    "nav_end_date": None,      # 日付ナビゲーション用の表示終了日
-    "custom_groups": {},       # 手動編集されたグループ設定
+    "nav_end_date": None,
+    "custom_groups": {},
+    "supply_sources": [],      # list[SupplySource] as dicts
+    "editing_source_idx": None,  # None=非編集, -1=新規追加, int=編集中インデックス
 }
 for _k, _v in _DEFAULTS.items():
     if _k not in st.session_state:
@@ -278,6 +283,150 @@ with st.expander("🏷 グループ管理（施設の地域・機能種別を編
 
 
 # ---------------------------------------------------------------------------
+# 電源管理
+# ---------------------------------------------------------------------------
+
+_MONTH_NAMES = ["1月","2月","3月","4月","5月","6月","7月","8月","9月","10月","11月","12月"]
+
+def _source_form(prefix: str, defaults: dict | None = None) -> dict | None:
+    """電源追加/編集フォーム。保存ボタンが押されたら dict を返す。"""
+    d = defaults or {}
+    col1, col2, col3, col4 = st.columns([3, 2, 2, 2])
+    name     = col1.text_input("電源名",         value=d.get("name", ""), key=f"{prefix}_name")
+    stype_lbl = col2.selectbox(
+        "種別",
+        options=list(supply_planner.SOURCE_TYPE_LABELS.values()),
+        index=list(supply_planner.SOURCE_TYPE_LABELS.values()).index(
+            supply_planner.SOURCE_TYPE_LABELS.get(d.get("source_type","hydro"), "水力")
+        ),
+        key=f"{prefix}_type",
+    )
+    cap  = col3.number_input("設備容量 (kW)", min_value=0.0, value=float(d.get("capacity_kw", 300.0)),
+                              step=10.0, key=f"{prefix}_cap")
+    cost = col4.number_input("発電コスト (円/kWh)", min_value=0.0,
+                              value=float(d.get("cost_per_kwh", 8.0)), step=0.5, key=f"{prefix}_cost")
+
+    # 月別稼働率
+    st.caption("月別稼働率 (%)")
+    monthly_default = d.get("monthly_utilization_pct", [80.0]*12)
+    cols6a = st.columns(6)
+    cols6b = st.columns(6)
+    monthly = []
+    for i, (mn, c) in enumerate(zip(_MONTH_NAMES[:6], cols6a)):
+        monthly.append(c.number_input(mn, 0, 100, int(monthly_default[i]), key=f"{prefix}_m{i}"))
+    for i, (mn, c) in enumerate(zip(_MONTH_NAMES[6:], cols6b)):
+        monthly.append(c.number_input(mn, 0, 100, int(monthly_default[i+6]), key=f"{prefix}_m{i+6}"))
+
+    # 時間帯別出力
+    st.caption("時間帯別出力比")
+    preset_opts = list(supply_planner.HOURLY_PRESETS.keys()) + ["カスタム"]
+    hourly_default = d.get("hourly_pattern_pct", [100.0]*24)
+    # 既存設定からプリセットを推定
+    matched_preset = "カスタム"
+    for pname, pvals in supply_planner.HOURLY_PRESETS.items():
+        if pvals == hourly_default:
+            matched_preset = pname
+            break
+    preset = st.radio("プリセット", preset_opts,
+                      index=preset_opts.index(matched_preset),
+                      horizontal=True, key=f"{prefix}_preset")
+    if preset == "カスタム":
+        hourly_df = pd.DataFrame({
+            "時間帯": [f"{h:02d}:00" for h in range(24)],
+            "出力比(%)": hourly_default,
+        })
+        edited_h = st.data_editor(
+            hourly_df,
+            column_config={"出力比(%)": st.column_config.NumberColumn(min_value=0, max_value=100)},
+            hide_index=True, use_container_width=True, height=400, key=f"{prefix}_heditor",
+        )
+        hourly = edited_h["出力比(%)"].tolist()
+    else:
+        hourly = supply_planner.HOURLY_PRESETS[preset]
+        st.plotly_chart(
+            visualizer.hourly_pattern_bar(hourly, name or "電源"),
+            use_container_width=True,
+        )
+
+    start_date_str = st.text_input("運転開始日 (YYYY-MM-DD、空欄=既存)",
+                                    value=d.get("start_date") or "", key=f"{prefix}_start")
+
+    if st.button("💾 保存", key=f"{prefix}_save"):
+        if not name:
+            st.error("電源名を入力してください。")
+            return None
+        return {
+            "name": name,
+            "source_type": supply_planner.SOURCE_TYPE_KEYS.get(stype_lbl, "hydro"),
+            "capacity_kw": cap,
+            "cost_per_kwh": cost,
+            "monthly_utilization_pct": monthly,
+            "hourly_pattern_pct": hourly,
+            "start_date": start_date_str or None,
+        }
+    return None
+
+
+with st.expander("⚡ 電源管理（供給側の設定）", expanded=False):
+    st.caption("新電力として調達・運用する電源を登録します。需給分析・収支シミュレーションに使用されます。")
+
+    sources_raw: list[dict] = st.session_state.get("supply_sources", [])
+    sources = [supply_planner.SupplySource(**s) for s in sources_raw]
+
+    # 登録済み電源一覧
+    if sources:
+        for idx, src in enumerate(sources):
+            type_lbl = supply_planner.SOURCE_TYPE_LABELS.get(src.source_type, src.source_type)
+            with st.container(border=True):
+                h1, h2, h3, h_edit, h_del = st.columns([3, 2, 2, 1, 1])
+                h1.markdown(f"**{src.name}**")
+                h2.caption(f"{type_lbl} / {src.capacity_kw:.0f} kW")
+                h3.caption(f"{src.cost_per_kwh:.1f} 円/kWh")
+                if h_edit.button("編集", key=f"edit_{idx}"):
+                    st.session_state["editing_source_idx"] = idx
+                    st.rerun()
+                if h_del.button("削除", key=f"del_src_{idx}"):
+                    sources.pop(idx)
+                    st.session_state["supply_sources"] = [asdict(s) for s in sources]
+                    try:
+                        supply_planner.save_sources(sources)
+                    except Exception:
+                        pass
+                    st.rerun()
+    else:
+        st.info("電源が登録されていません。")
+
+    editing_idx = st.session_state.get("editing_source_idx")
+
+    # 編集フォーム
+    if editing_idx is not None:
+        label = "電源を編集" if editing_idx >= 0 else "電源を追加"
+        st.markdown(f"#### {label}")
+        defaults = asdict(sources[editing_idx]) if editing_idx >= 0 else None
+        result = _source_form(prefix=f"src_form_{editing_idx}", defaults=defaults)
+        if result:
+            new_src = supply_planner.SupplySource(**result)
+            if editing_idx >= 0:
+                sources[editing_idx] = new_src
+            else:
+                sources.append(new_src)
+            st.session_state["supply_sources"] = [asdict(s) for s in sources]
+            st.session_state["editing_source_idx"] = None
+            try:
+                supply_planner.save_sources(sources)
+            except Exception:
+                pass
+            st.rerun()
+        if st.button("キャンセル", key="cancel_form"):
+            st.session_state["editing_source_idx"] = None
+            st.rerun()
+    else:
+        if st.button("＋ 電源を追加"):
+            st.session_state["editing_source_idx"] = -1
+            st.rerun()
+
+
+# ---------------------------------------------------------------------------
 # フィルタ UI
 # ---------------------------------------------------------------------------
 
@@ -431,9 +580,13 @@ st.markdown("---")
 # タブ
 # ---------------------------------------------------------------------------
 
-tab_demand, tab_pattern, tab_supply = st.tabs(
-    ["📈 需要カーブ", "📊 需要パターン分析", "☀️ PPAシミュレーション"]
-)
+tab_demand, tab_pattern, tab_balance, tab_pnl, tab_supply = st.tabs([
+    "📈 需要カーブ",
+    "📊 需要パターン分析",
+    "⚡ 需給分析",
+    "💰 収支シミュレーション",
+    "☀️ PPAシミュレーション",
+])
 
 
 # ── 共通：timeseries データの選択 ──
@@ -528,6 +681,197 @@ with tab_pattern:
         visualizer.daily_bar(analyzer.aggregate_daily(pat_df, by_facility=by_fac), by_facility=by_fac),
         use_container_width=True,
     )
+
+
+with tab_balance:
+    st.subheader("⚡ 需給バランス分析")
+
+    sources_for_balance = [
+        supply_planner.SupplySource(**s)
+        for s in st.session_state.get("supply_sources", [])
+    ]
+
+    if not sources_for_balance:
+        st.info("「電源管理」で供給電源を登録すると需給バランスが表示されます。")
+    else:
+        # 分析期間セレクタ（パターン分析と同じ構造）
+        bc1, bc2 = st.columns([2, 4])
+        with bc1:
+            bal_period = st.selectbox(
+                "分析期間",
+                ["全データ期間", "直近1年", "直近6か月", "直近3か月", "表示期間と同じ"],
+                index=0, key="bal_period",
+            )
+        _bmax = filtered_base["datetime"].max()
+        if bal_period == "全データ期間":
+            bal_df_demand = filtered_base.copy()
+        elif bal_period == "直近1年":
+            bal_df_demand = analyzer.filter_by_period(filtered_base, _bmax - timedelta(days=365), _bmax)
+        elif bal_period == "直近6か月":
+            bal_df_demand = analyzer.filter_by_period(filtered_base, _bmax - timedelta(days=180), _bmax)
+        elif bal_period == "直近3か月":
+            bal_df_demand = analyzer.filter_by_period(filtered_base, _bmax - timedelta(days=90), _bmax)
+        else:
+            bal_df_demand = filtered.copy()
+        with bc2:
+            st.caption(
+                f"需要データ: {bal_df_demand['datetime'].min().strftime('%Y/%m/%d')} 〜 "
+                f"{bal_df_demand['datetime'].max().strftime('%Y/%m/%d')}  "
+                f"（{len(bal_df_demand):,} 行）"
+            )
+
+        # 供給プロファイル生成
+        bal_timestamps = pd.DatetimeIndex(bal_df_demand["datetime"].sort_values().unique())
+        bal_supply_df  = supply_planner.combine_supply_profiles(sources_for_balance, bal_timestamps)
+        balance_df     = financial_model.calc_balance(bal_df_demand, bal_supply_df)
+        source_names   = [s.name for s in sources_for_balance]
+        kpis           = financial_model.calc_balance_kpis(balance_df)
+
+        # KPI
+        k1, k2, k3, k4, k5 = st.columns(5)
+        k1.metric("総需要",     f"{kpis['total_demand_kwh']/1000:.1f} MWh")
+        k2.metric("自社供給",   f"{kpis['total_supply_kwh']/1000:.1f} MWh")
+        k3.metric("自給率",     f"{kpis['self_sufficiency_pct']:.1f} %")
+        k4.metric("余剰（売電可）", f"{kpis['surplus_kwh']/1000:.1f} MWh")
+        k5.metric("不足（JEPX）",  f"{kpis['deficit_kwh']/1000:.1f} MWh")
+
+        st.markdown("---")
+
+        # 需給バランスグラフ
+        st.plotly_chart(
+            visualizer.supply_demand_balance_chart(balance_df, source_names),
+            use_container_width=True,
+        )
+
+
+with tab_pnl:
+    st.subheader("💰 収支シミュレーション")
+
+    sources_for_pnl = [
+        supply_planner.SupplySource(**s)
+        for s in st.session_state.get("supply_sources", [])
+    ]
+
+    if not sources_for_pnl:
+        st.info("「電源管理」で供給電源を登録すると収支シミュレーションが実行できます。")
+    else:
+        # ── 価格設定 ────────────────────────────────────────────────────────
+        with st.container(border=True):
+            st.markdown("**① 価格設定**")
+            pc1, pc2, pc3, pc4 = st.columns(4)
+            retail_price   = pc1.number_input("小売単価 (円/kWh)",          min_value=0.0, value=25.0, step=0.5)
+            surplus_price  = pc2.number_input("余剰売電単価 (円/kWh)",       min_value=0.0, value=7.0,  step=0.5)
+            imb_factor     = pc3.number_input("インバランス率 (%)",           min_value=0.0, value=10.0, step=1.0,
+                                               help="調達量のうち計画誤差でインバランスになる割合")
+            imb_premium    = pc4.number_input("インバランスプレミアム (円/kWh)", min_value=0.0, value=3.0, step=0.5,
+                                               help="インバランス精算の追加コスト")
+
+        with st.container(border=True):
+            st.markdown("**② JEPX 想定単価（時間帯別）**")
+            st.caption("デフォルトは 2023〜24 年平均の目安値。実データに合わせて調整してください。")
+            jepx_labels = {
+                "深夜（0〜6時）":    list(range(0, 6)),
+                "朝（6〜9時）":      list(range(6, 9)),
+                "日中（9〜16時）":   list(range(9, 16)),
+                "夕方（16〜20時）":  list(range(16, 20)),
+                "夜（20〜24時）":    list(range(20, 24)),
+            }
+            jepx_defaults = {
+                "深夜（0〜6時）": 9.0, "朝（6〜9時）": 18.0,
+                "日中（9〜16時）": 15.0, "夕方（16〜20時）": 21.0, "夜（20〜24時）": 12.0,
+            }
+            jepx_cols = st.columns(5)
+            jepx_block_prices = {}
+            for (label, hours), col in zip(jepx_labels.items(), jepx_cols):
+                jepx_block_prices[label] = col.number_input(
+                    label, min_value=0.0,
+                    value=jepx_defaults[label], step=0.5, key=f"jepx_{label}",
+                )
+            jepx_by_hour: dict[int, float] = {}
+            for label, hours in jepx_labels.items():
+                for h in hours:
+                    jepx_by_hour[h] = jepx_block_prices[label]
+
+        with st.container(border=True):
+            st.markdown("**③ 発電コスト（電源別）**")
+            src_cost_cols = st.columns(min(len(sources_for_pnl), 4))
+            source_costs: dict[str, float] = {}
+            for i, src in enumerate(sources_for_pnl):
+                col = src_cost_cols[i % len(src_cost_cols)]
+                source_costs[src.name] = col.number_input(
+                    f"{src.name} (円/kWh)",
+                    min_value=0.0, value=src.cost_per_kwh, step=0.5,
+                    key=f"cost_{src.name}",
+                )
+
+        # ── 分析期間 ────────────────────────────────────────────────────────
+        pnl_period = st.selectbox(
+            "分析期間", ["全データ期間", "直近1年", "直近6か月", "直近3か月"],
+            key="pnl_period",
+        )
+        _pmax = filtered_base["datetime"].max()
+        _pmap = {
+            "全データ期間": filtered_base,
+            "直近1年":   analyzer.filter_by_period(filtered_base, _pmax - timedelta(days=365), _pmax),
+            "直近6か月": analyzer.filter_by_period(filtered_base, _pmax - timedelta(days=180), _pmax),
+            "直近3か月": analyzer.filter_by_period(filtered_base, _pmax - timedelta(days=90),  _pmax),
+        }
+        pnl_demand_df = _pmap[pnl_period]
+
+        if st.button("▶ 収支シミュレーション実行", type="primary"):
+            with st.spinner("計算中..."):
+                _pnl_ts      = pd.DatetimeIndex(pnl_demand_df["datetime"].sort_values().unique())
+                _pnl_supply  = supply_planner.combine_supply_profiles(sources_for_pnl, _pnl_ts)
+                _pnl_balance = financial_model.calc_balance(pnl_demand_df, _pnl_supply)
+                _pnl_df      = financial_model.calc_pnl(
+                    _pnl_balance, _pnl_supply, source_costs,
+                    retail_price_yen     = retail_price,
+                    jepx_price_by_hour   = jepx_by_hour,
+                    surplus_sell_price_yen = surplus_price,
+                    inbalance_factor_pct = imb_factor,
+                    inbalance_premium_yen = imb_premium,
+                )
+                st.session_state["pnl_result"]  = _pnl_df
+                st.session_state["pnl_monthly"] = financial_model.monthly_pnl_summary(_pnl_df)
+
+        pnl_result  = st.session_state.get("pnl_result")
+        pnl_monthly = st.session_state.get("pnl_monthly")
+
+        if pnl_result is None:
+            st.info("価格を設定して「収支シミュレーション実行」を押してください。")
+        else:
+            # KPI
+            total_revenue = float(pnl_result["retail_revenue"].sum() + pnl_result["surplus_revenue"].sum())
+            total_cost    = float(pnl_result["gen_cost"].sum() + pnl_result["procurement_cost"].sum() + pnl_result["inbalance_cost"].sum())
+            total_profit  = float(pnl_result["profit"].sum())
+            months        = pnl_monthly["month"].nunique() if pnl_monthly is not None else 1
+
+            st.markdown("---")
+            r1, r2, r3, r4 = st.columns(4)
+            r1.metric("総収入（期間）",    f"{total_revenue/10000:.0f} 万円")
+            r2.metric("総コスト（期間）",   f"{total_cost/10000:.0f} 万円")
+            r3.metric("事業利益（期間）",   f"{total_profit/10000:.0f} 万円",
+                       delta=f"月平均 {total_profit/10000/max(months,1):.0f} 万円")
+            r4.metric("収支率",
+                       f"{total_profit/total_revenue*100:.1f} %" if total_revenue > 0 else "—")
+
+            if pnl_monthly is not None:
+                st.plotly_chart(
+                    visualizer.monthly_pnl_chart(pnl_monthly),
+                    use_container_width=True,
+                )
+
+                with st.expander("月別数値テーブル"):
+                    tbl = pnl_monthly.copy()
+                    tbl["month"] = tbl["month"].dt.strftime("%Y-%m")
+                    tbl = tbl.rename(columns={
+                        "month": "月", "retail_revenue": "小売収入(円)",
+                        "surplus_revenue": "余剰売電(円)", "gen_cost": "発電コスト(円)",
+                        "procurement_cost": "JEPX調達(円)", "inbalance_cost": "インバランス(円)",
+                        "profit": "利益(円)", "demand_kwh": "需要(kWh)",
+                        "deficit_kwh": "不足(kWh)", "surplus_kwh": "余剰(kWh)",
+                    })
+                    st.dataframe(tbl.set_index("月"), use_container_width=True)
 
 
 with tab_supply:
