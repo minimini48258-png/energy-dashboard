@@ -706,7 +706,9 @@ def _supply_for_period(start: date, end: date) -> pd.DataFrame | None:
     if not _sel:
         return None
     _sdf = _sdf[_sdf["source_name"].isin(_sel)].copy()
-    _sdf = _sdf[(_sdf["datetime"].dt.date >= start) & (_sdf["datetime"].dt.date <= end)]
+    _start_ts = pd.Timestamp(start)
+    _end_ts   = pd.Timestamp(end) + pd.Timedelta(days=1)
+    _sdf = _sdf[(_sdf["datetime"] >= _start_ts) & (_sdf["datetime"] < _end_ts)]
     return _sdf if not _sdf.empty else None
 
 
