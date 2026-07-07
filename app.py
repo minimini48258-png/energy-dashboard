@@ -807,10 +807,19 @@ with tab_balance:
         k5.metric("不足（JEPX）",  f"{kpis['deficit_kwh']/1000:.1f} MWh")
 
         st.markdown("---")
-        st.plotly_chart(
-            visualizer.supply_demand_balance_chart(balance_df, source_names),
-            use_container_width=True,
-        )
+        try:
+            st.plotly_chart(
+                visualizer.supply_demand_balance_chart(balance_df, source_names),
+                use_container_width=True,
+            )
+        except Exception as _chart_err:
+            st.error(f"チャート描画エラー: {type(_chart_err).__name__}: {_chart_err}")
+            st.write("**デバッグ情報**")
+            st.write(f"balance_df columns: {list(balance_df.columns)}")
+            st.write(f"source_names: {source_names}")
+            st.write(f"balance_df shape: {balance_df.shape}")
+            import traceback
+            st.code(traceback.format_exc())
 
 
 with tab_pnl:

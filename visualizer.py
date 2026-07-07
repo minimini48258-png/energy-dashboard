@@ -5,6 +5,8 @@ Plotly を使ってグラフを生成する関数群。
 
 from __future__ import annotations
 
+__version__ = "1.1.0"  # supply_demand_balance_chart, monthly_pnl_chart, hourly_pattern_bar 追加
+
 import plotly.express as px
 import plotly.graph_objects as go
 import pandas as pd
