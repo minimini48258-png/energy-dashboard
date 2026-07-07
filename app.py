@@ -20,6 +20,7 @@ import data_loader
 import financial_model
 import grouping
 import solar_simulator
+import supply_cache_manager
 import supply_loader
 import supply_planner
 import visualizer
@@ -49,6 +50,7 @@ _DEFAULTS: dict = {
     "supply_df": None,           # アップロード済み供給データ DataFrame
     "supply_filenames": [],      # アップロード済みファイル名リスト
     "loaded_supply_file_ids": set(),
+    "selected_supply_names": [], # 表示対象として選択した電源名リスト
 }
 for _k, _v in _DEFAULTS.items():
     if _k not in st.session_state:
@@ -172,21 +174,65 @@ with st.sidebar:
                 st.session_state["supply_df"] = merged_supply
                 st.session_state["supply_filenames"] = supply_names
                 st.session_state["loaded_supply_file_ids"] = supply_ids
+                # 新規読み込み時は全電源を選択状態にする
+                st.session_state["selected_supply_names"] = sorted(merged_supply["source_name"].unique().tolist())
     elif st.session_state["supply_df"] is not None and st.session_state["loaded_supply_file_ids"]:
         st.session_state["supply_df"] = None
         st.session_state["supply_filenames"] = []
         st.session_state["loaded_supply_file_ids"] = set()
+        st.session_state["selected_supply_names"] = []
 
     if st.session_state["supply_df"] is not None:
-        sdf = st.session_state["supply_df"]
-        srcs = sorted(sdf["source_name"].unique())
-        st.sidebar.caption(
-            f"電源: {', '.join(srcs)}  |  "
-            f"{sdf['datetime'].min().strftime('%Y/%m/%d')} 〜 "
-            f"{sdf['datetime'].max().strftime('%Y/%m/%d')}"
+        _sdf = st.session_state["supply_df"]
+        _all_srcs = sorted(_sdf["source_name"].unique().tolist())
+        # 発電所選択（複数電源がある場合のみ表示）
+        if len(_all_srcs) > 1:
+            _prev_sel = [s for s in st.session_state.get("selected_supply_names", _all_srcs) if s in _all_srcs]
+            _sel_srcs = st.multiselect("📍 表示する発電所", _all_srcs, default=_prev_sel or _all_srcs)
+            st.session_state["selected_supply_names"] = _sel_srcs
+        else:
+            st.session_state["selected_supply_names"] = _all_srcs
+            st.caption(f"電源: {', '.join(_all_srcs)}")
+        st.caption(
+            f"{_sdf['datetime'].min().strftime('%Y/%m/%d')} 〜 "
+            f"{_sdf['datetime'].max().strftime('%Y/%m/%d')}  "
+            f"（{len(_sdf):,} 行）"
         )
+        # 保存ボタン
+        if st.button("💾 供給データを保存", key="save_supply_btn"):
+            try:
+                supply_cache_manager.save(_sdf, st.session_state.get("supply_filenames", []))
+                st.success("保存しました")
+                st.rerun()
+            except Exception as _e:
+                st.error(f"保存失敗: {_e}")
 
-    # ── 保存済みデータ ────────────────────────────────────
+    # ── 保存済み供給データ ─────────────────────────────────
+    _supply_entries = supply_cache_manager.list_entries()
+    if _supply_entries:
+        st.markdown("---")
+        st.header("🗂 保存済み供給データ")
+        for _smeta in _supply_entries:
+            _src_preview = "、".join(_smeta["source_names"][:3])
+            if len(_smeta["source_names"]) > 3:
+                _src_preview += f" 他{len(_smeta['source_names'])-3}電源"
+            _slabel = f"{_smeta['date_min']} 〜 {_smeta['date_max']}  |  {_smeta['rows']:,}行"
+            with st.expander(f"⚡ {_src_preview}", expanded=False):
+                st.caption(_slabel)
+                st.caption(f"ファイル: {', '.join(_smeta['filenames'][:2])}")
+                _sc1, _sc2 = st.columns(2)
+                if _sc1.button("読み込む", key=f"load_supply_{_smeta['cache_id']}"):
+                    _df_s = supply_cache_manager.load(_smeta["cache_id"])
+                    st.session_state["supply_df"] = _df_s
+                    st.session_state["supply_filenames"] = _smeta["filenames"]
+                    st.session_state["loaded_supply_file_ids"] = set()
+                    st.session_state["selected_supply_names"] = _smeta["source_names"]
+                    st.rerun()
+                if _sc2.button("削除", key=f"del_supply_{_smeta['cache_id']}"):
+                    supply_cache_manager.delete(_smeta["cache_id"])
+                    st.rerun()
+
+    # ── 保存済み需要データ ────────────────────────────────────
     entries = cache_manager.list_entries()
     if entries:
         st.markdown("---")
@@ -651,12 +697,35 @@ def _by_fac(filt: pd.DataFrame) -> bool:
     return agg_mode == "施設別"
 
 
+def _supply_for_period(start: date, end: date) -> pd.DataFrame | None:
+    """選択中の電源・指定期間でフィルタした supply_df を返す。なければ None。"""
+    _sdf = st.session_state.get("supply_df")
+    if _sdf is None or _sdf.empty:
+        return None
+    _sel = st.session_state.get("selected_supply_names", [])
+    if not _sel:
+        return None
+    _sdf = _sdf[_sdf["source_name"].isin(_sel)].copy()
+    _sdf = _sdf[(_sdf["datetime"].dt.date >= start) & (_sdf["datetime"].dt.date <= end)]
+    return _sdf if not _sdf.empty else None
+
+
 with tab_demand:
     period_label = f"{start_dt.strftime('%Y/%m/%d')} 〜 {end_dt.strftime('%Y/%m/%d')}"
-    st.plotly_chart(
-        visualizer.demand_timeseries(_ts_data(filtered), title=f"電力使用量（30分値）— {period_label}"),
-        use_container_width=True,
-    )
+    _chart_supply = _supply_for_period(start_dt, end_dt)
+    if _chart_supply is not None:
+        st.plotly_chart(
+            visualizer.demand_supply_timeseries(
+                _ts_data(filtered), _chart_supply,
+                title=f"需要 vs 供給（30分値）— {period_label}",
+            ),
+            use_container_width=True,
+        )
+    else:
+        st.plotly_chart(
+            visualizer.demand_timeseries(_ts_data(filtered), title=f"電力使用量（30分値）— {period_label}"),
+            use_container_width=True,
+        )
 
 
 with tab_pattern:
@@ -737,7 +806,12 @@ with tab_balance:
     _bal_supply_parts = []
     _uploaded_supply = st.session_state.get("supply_df")
     if _uploaded_supply is not None:
-        _bal_supply_parts.append(_uploaded_supply)
+        _sel_names = st.session_state.get("selected_supply_names", [])
+        _filtered_upload = (
+            _uploaded_supply[_uploaded_supply["source_name"].isin(_sel_names)]
+            if _sel_names else _uploaded_supply
+        )
+        _bal_supply_parts.append(_filtered_upload)
     _param_sources = [supply_planner.SupplySource(**s) for s in st.session_state.get("supply_sources", [])]
 
     if not _bal_supply_parts and not _param_sources:
@@ -828,7 +902,12 @@ with tab_pnl:
     _pnl_supply_parts = []
     _pnl_uploaded = st.session_state.get("supply_df")
     if _pnl_uploaded is not None:
-        _pnl_supply_parts.append(_pnl_uploaded)
+        _pnl_sel = st.session_state.get("selected_supply_names", [])
+        _pnl_filtered = (
+            _pnl_uploaded[_pnl_uploaded["source_name"].isin(_pnl_sel)]
+            if _pnl_sel else _pnl_uploaded
+        )
+        _pnl_supply_parts.append(_pnl_filtered)
     sources_for_pnl = [supply_planner.SupplySource(**s) for s in st.session_state.get("supply_sources", [])]
 
     if not _pnl_supply_parts and not sources_for_pnl:

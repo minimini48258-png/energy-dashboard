@@ -444,13 +444,69 @@ def monthly_self_consumption_bar(
 
 
 # ---------------------------------------------------------------------------
-# 需給バランスチャート（電源別積み上げ＋需要線）
+# 需要カーブ + 供給量オーバーレイ
 # ---------------------------------------------------------------------------
 
 SOURCE_PALETTE = [
     "#2E86AB", "#A23B72", "#F18F01", "#3BB273", "#7B2D8B",
     "#E94F37", "#44BBA4", "#E8C547",
 ]
+
+
+def demand_supply_timeseries(
+    demand_df: pd.DataFrame,
+    supply_df: pd.DataFrame,
+    title: str = "需要 vs 供給（30分値）",
+) -> go.Figure:
+    """
+    需要カーブ（ライン）と電源別供給量（積み上げバー）を重ね合わせる。
+    demand_df: datetime / consumption_kwh[, facility_name]
+    supply_df: datetime / source_name / supply_kwh
+    """
+    fig = go.Figure()
+
+    # 供給: 電源別積み上げバー
+    for i, src in enumerate(sorted(supply_df["source_name"].unique())):
+        src_data = supply_df[supply_df["source_name"] == src].sort_values("datetime")
+        fig.add_trace(go.Bar(
+            x=src_data["datetime"],
+            y=src_data["supply_kwh"],
+            name=src,
+            marker_color=SOURCE_PALETTE[i % len(SOURCE_PALETTE)],
+            opacity=0.60,
+        ))
+
+    # 需要: 施設別または合計ライン
+    has_facility = "facility_name" in demand_df.columns and demand_df["facility_name"].nunique() > 1
+    if has_facility:
+        for j, fac in enumerate(sorted(demand_df["facility_name"].unique())):
+            fac_df = demand_df[demand_df["facility_name"] == fac].sort_values("datetime")
+            fig.add_trace(go.Scatter(
+                x=fac_df["datetime"],
+                y=fac_df["consumption_kwh"],
+                name=fac,
+                line=dict(width=1.5, color=COLORS[j % len(COLORS)]),
+                mode="lines",
+            ))
+    else:
+        fig.add_trace(go.Scatter(
+            x=demand_df.sort_values("datetime")["datetime"],
+            y=demand_df.sort_values("datetime")["consumption_kwh"],
+            name="総需要",
+            line=dict(color="#1A1A1A", width=2),
+            mode="lines",
+        ))
+
+    fig.update_layout(
+        barmode="stack",
+        title=title,
+        xaxis_title="日時",
+        yaxis_title="電力量 (kWh/30min)",
+        hovermode="x unified",
+        legend=dict(orientation="h", yanchor="bottom", y=1.02, xanchor="right", x=1),
+        margin=dict(l=20, r=20, t=50, b=20),
+    )
+    return fig
 
 
 def supply_demand_balance_chart(
