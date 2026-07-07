@@ -873,15 +873,31 @@ with tab_pnl:
 
         with st.container(border=True):
             st.markdown("**③ 発電コスト（電源別）**")
-            src_cost_cols = st.columns(min(len(sources_for_pnl), 4))
+            # アップロード電源とパラメータ設定電源を統合してコスト入力欄を生成
+            _all_src_names: list[str] = []
+            _all_src_defaults: dict[str, float] = {}
+            if _pnl_uploaded is not None:
+                for _sn in sorted(_pnl_uploaded["source_name"].unique()):
+                    _all_src_names.append(_sn)
+                    _all_src_defaults[_sn] = 8.0  # アップロード電源のデフォルト発電コスト
+            for _src in sources_for_pnl:
+                if _src.name not in _all_src_names:
+                    _all_src_names.append(_src.name)
+                _all_src_defaults[_src.name] = _src.cost_per_kwh
+
             source_costs: dict[str, float] = {}
-            for i, src in enumerate(sources_for_pnl):
-                col = src_cost_cols[i % len(src_cost_cols)]
-                source_costs[src.name] = col.number_input(
-                    f"{src.name} (円/kWh)",
-                    min_value=0.0, value=src.cost_per_kwh, step=0.5,
-                    key=f"cost_{src.name}",
-                )
+            if _all_src_names:
+                _n_cols = min(len(_all_src_names), 4)
+                src_cost_cols = st.columns(_n_cols)
+                for i, _sn in enumerate(_all_src_names):
+                    col = src_cost_cols[i % _n_cols]
+                    source_costs[_sn] = col.number_input(
+                        f"{_sn} (円/kWh)",
+                        min_value=0.0, value=_all_src_defaults[_sn], step=0.5,
+                        key=f"cost_{_sn}",
+                    )
+            else:
+                st.caption("電源が登録されていません。")
 
         # ── 分析期間 ────────────────────────────────────────────────────────
         pnl_period = st.selectbox(
