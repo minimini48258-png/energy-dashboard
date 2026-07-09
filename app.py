@@ -19,6 +19,7 @@ import data_cleaner
 import data_loader
 import financial_model
 import grouping
+import pdf_report
 import report_generator
 import solar_simulator
 import supply_cache_manager
@@ -1273,26 +1274,6 @@ with tab_supply:
             help="蓄電池に入りきらなかった余剰太陽光が系統へ流れた量",
         )
 
-        # ── レポートダウンロード ─────────────────────────────────────────────
-        _report_bytes = report_generator.build_excel_report(
-            sim_df=ppa_sim,
-            kpis=kpis,
-            solar_kw=sim_solar_kw,
-            battery_kwh=st.session_state.get("ppa_sim_battery_kwh", 0),
-            battery_eff=sim_battery_eff,
-            mode_label=_mode_label,
-            analysis_period=sim_period,
-        )
-        _report_name = (
-            f"PPA_simulation_{pd.Timestamp.now().strftime('%Y%m%d_%H%M')}.xlsx"
-        )
-        st.download_button(
-            label="📥 レポートをダウンロード（Excel）",
-            data=_report_bytes,
-            file_name=_report_name,
-            mime="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
-        )
-
         st.markdown("---")
 
         # 表示期間でフィルタ（時系列グラフ用）
@@ -1305,19 +1286,63 @@ with tab_supply:
         period_label = f"{start_dt.strftime('%Y/%m/%d')} 〜 {end_dt.strftime('%Y/%m/%d')}"
         st.caption(f"📅 以下の時系列グラフは需要カーブの表示期間（{period_label}）を使用しています。")
 
-        st.plotly_chart(
-            visualizer.solar_supply_chart(sim_disp),
-            use_container_width=True,
-        )
-
+        # チャートを変数に生成（表示とPDFレポートで共用）
         _stored_battery = st.session_state.get("ppa_sim_battery_kwh", 0)
+        _fig_supply  = visualizer.solar_supply_chart(sim_disp)
+        _fig_monthly = visualizer.monthly_self_consumption_bar(ppa_sim)
+
+        _report_figures: list[tuple] = [
+            (_fig_supply, "需給バランス（太陽光・蓄電池導入後）"),
+        ]
         if _stored_battery > 0:
-            st.plotly_chart(
-                visualizer.battery_operation_chart(sim_disp, battery_capacity_kwh=_stored_battery),
+            _fig_battery = visualizer.battery_operation_chart(
+                sim_disp, battery_capacity_kwh=_stored_battery
+            )
+            _report_figures.append((_fig_battery, "蓄電池 充放電・残量推移"))
+        _report_figures.append((_fig_monthly, "月別 自家消費率・自給率"))
+
+        # ダッシュボード表示
+        st.plotly_chart(_fig_supply, use_container_width=True)
+        if _stored_battery > 0:
+            st.plotly_chart(_fig_battery, use_container_width=True)
+        st.plotly_chart(_fig_monthly, use_container_width=True)
+
+        # ── PDF / Excel ダウンロード ──────────────────────────────────────────
+        st.markdown("---")
+        dl_col1, dl_col2 = st.columns(2)
+        with dl_col1:
+            _html_bytes = pdf_report.build_html_report(
+                sim_df=ppa_sim,
+                kpis=kpis,
+                figures=_report_figures,
+                solar_kw=sim_solar_kw,
+                battery_kwh=_stored_battery,
+                battery_eff=sim_battery_eff,
+                mode_label=_mode_label,
+                analysis_period=sim_period,
+            )
+            st.download_button(
+                label="📄 PDFレポートをダウンロード（HTML）",
+                data=_html_bytes,
+                file_name=f"PPA_report_{pd.Timestamp.now().strftime('%Y%m%d_%H%M')}.html",
+                mime="text/html",
+                help="ダウンロードしたHTMLをブラウザで開き、Ctrl+P → PDF として保存してください。",
                 use_container_width=True,
             )
-
-        st.plotly_chart(
-            visualizer.monthly_self_consumption_bar(ppa_sim),
-            use_container_width=True,
-        )
+        with dl_col2:
+            _excel_bytes = report_generator.build_excel_report(
+                sim_df=ppa_sim,
+                kpis=kpis,
+                solar_kw=sim_solar_kw,
+                battery_kwh=_stored_battery,
+                battery_eff=sim_battery_eff,
+                mode_label=_mode_label,
+                analysis_period=sim_period,
+            )
+            st.download_button(
+                label="📥 Excelデータをダウンロード",
+                data=_excel_bytes,
+                file_name=f"PPA_data_{pd.Timestamp.now().strftime('%Y%m%d_%H%M')}.xlsx",
+                mime="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
+                use_container_width=True,
+            )
