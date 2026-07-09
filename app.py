@@ -19,6 +19,7 @@ import data_cleaner
 import data_loader
 import financial_model
 import grouping
+import report_generator
 import solar_simulator
 import supply_cache_manager
 import supply_loader
@@ -1270,6 +1271,26 @@ with tab_supply:
         k6.metric(
             "系統への売電量", _fmt(kpis["total_grid_export_kwh"]),
             help="蓄電池に入りきらなかった余剰太陽光が系統へ流れた量",
+        )
+
+        # ── レポートダウンロード ─────────────────────────────────────────────
+        _report_bytes = report_generator.build_excel_report(
+            sim_df=ppa_sim,
+            kpis=kpis,
+            solar_kw=sim_solar_kw,
+            battery_kwh=st.session_state.get("ppa_sim_battery_kwh", 0),
+            battery_eff=sim_battery_eff,
+            mode_label=_mode_label,
+            analysis_period=sim_period,
+        )
+        _report_name = (
+            f"PPA_simulation_{pd.Timestamp.now().strftime('%Y%m%d_%H%M')}.xlsx"
+        )
+        st.download_button(
+            label="📥 レポートをダウンロード（Excel）",
+            data=_report_bytes,
+            file_name=_report_name,
+            mime="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
         )
 
         st.markdown("---")
