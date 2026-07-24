@@ -117,6 +117,7 @@ pg = st.navigation({
     ],
     "需給・シミュレーション": [
         st.Page("pages/balance.py", title="需給分析", icon="⚡"),
+        st.Page("pages/eight_pattern.py", title="8パターン分析", icon="📅"),
         st.Page("pages/ppa.py", title="PPAシミュレーション", icon="☀️"),
     ],
     "🏪 小売FS": [

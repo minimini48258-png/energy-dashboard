@@ -79,4 +79,7 @@ else:
             "revenue": "売上高(円)", "cost_of_sales": "売上原価(円)", "gross_profit": "売上総利益(円)",
             "net_income": "当期純利益(円)",
         })
-        st.dataframe(cmp_tbl, use_container_width=True)
+        st.dataframe(
+            cmp_tbl, use_container_width=True,
+            column_config={c: st.column_config.NumberColumn(c, format="%,.0f") for c in cmp_tbl.columns},
+        )

@@ -36,6 +36,7 @@ import pandas as pd
 
 FACILITY_CONFIG_FILE = Path("/tmp/energy_dashboard/retail_fs_facilities.json")
 TARIFF_PLAN_FILE = Path("/tmp/energy_dashboard/retail_fs_tariffs.json")
+FS_DESIGN_FILE = Path("/tmp/energy_dashboard/fs_design.json")
 
 VOLTAGE_CLASSES: list[str] = ["低圧", "高圧", "特別高圧"]
 
@@ -153,6 +154,24 @@ def save_tariff_plans(plans: list[TariffPlan]) -> None:
         json.dumps([asdict(p) for p in plans], ensure_ascii=False, indent=2),
         encoding="utf-8",
     )
+
+
+def save_fs_design(design: dict) -> None:
+    """シナリオ設計一式（料金プラン・施設設定を除く③〜⑦の前提条件）を保存する。"""
+    FS_DESIGN_FILE.parent.mkdir(parents=True, exist_ok=True)
+    FS_DESIGN_FILE.write_text(
+        json.dumps(design, ensure_ascii=False, indent=2),
+        encoding="utf-8",
+    )
+
+
+def load_fs_design() -> dict:
+    if not FS_DESIGN_FILE.exists():
+        return {}
+    try:
+        return json.loads(FS_DESIGN_FILE.read_text("utf-8"))
+    except Exception:
+        return {}
 
 
 def load_tariff_plans() -> list[TariffPlan]:

@@ -32,6 +32,9 @@ filtered_base, group_mode = common.render_facility_filter(df, facility_names, gr
 _uploaded = st.session_state.get("supply_df")
 _sources = [supply_planner.SupplySource(**s) for s in st.session_state.get("supply_sources", [])]
 
+# 前回保存したシナリオ設計（③〜⑦）。ウィジェットの初期値として使う。
+_saved = retail_fs.load_fs_design()
+
 # ── ① 料金プラン ────────────────────────────────────────────────────
 if st.session_state["retail_fs_tariffs"] is None:
     _loaded_plans = retail_fs.load_tariff_plans()
@@ -199,18 +202,22 @@ with st.container(border=True):
 with st.container(border=True):
     st.markdown("**③ 託送料金（電圧区分別）**")
     _default_trans = retail_fs.default_transmission_rates()
+    _saved_trans = _saved.get("transmission_rates", {})
     transmission_rates: dict[str, retail_fs.TransmissionRate] = {}
     _trans_cols = st.columns(3)
     for vc, col in zip(retail_fs.VOLTAGE_CLASSES, _trans_cols):
+        _saved_vc = _saved_trans.get(vc, {})
         with col:
             st.caption(vc)
             b = st.number_input(
                 "基本単価(円/kW・月)", min_value=0.0,
-                value=_default_trans[vc].basic_yen_per_kw, step=10.0, key=f"fs_trans_basic_{vc}",
+                value=_saved_vc.get("basic_yen_per_kw", _default_trans[vc].basic_yen_per_kw),
+                step=10.0, key=f"fs_trans_basic_{vc}",
             )
             v = st.number_input(
                 "従量単価(円/kWh)", min_value=0.0,
-                value=_default_trans[vc].volumetric_yen_per_kwh, step=0.1, key=f"fs_trans_vol_{vc}",
+                value=_saved_vc.get("volumetric_yen_per_kwh", _default_trans[vc].volumetric_yen_per_kwh),
+                step=0.1, key=f"fs_trans_vol_{vc}",
             )
             transmission_rates[vc] = retail_fs.TransmissionRate(vc, basic_yen_per_kw=b, volumetric_yen_per_kwh=v)
 
@@ -219,20 +226,20 @@ with st.container(border=True):
     st.markdown("**④ 燃料費調整・再エネ賦課金・容量拠出金・予備費率**")
     f1, f2, f3, f4 = st.columns(4)
     fuel_adj = f1.number_input(
-        "燃料費調整単価(円/kWh)", value=0.0, step=0.1, key="fs_fuel_adj",
+        "燃料費調整単価(円/kWh)", value=_saved.get("fuel_adjustment_yen_per_kwh", 0.0), step=0.1, key="fs_fuel_adj",
         help="※要確認：エリア・月別の実際の燃調単価をご確認のうえ入力してください",
     )
     levy = f2.number_input(
-        "再エネ賦課金単価(円/kWh)", value=4.18, step=0.01, key="fs_levy",
+        "再エネ賦課金単価(円/kWh)", value=_saved.get("renewable_levy_yen_per_kwh", 4.18), step=0.01, key="fs_levy",
         help="※要確認：経済産業省公表、2026年5月〜2027年4月適用値。年度により変更されます",
     )
     capacity_unit = f3.number_input(
-        "容量拠出金単価(円/kW・年)", value=0.0, step=10.0, key="fs_capacity_unit",
+        "容量拠出金単価(円/kW・年)", value=_saved.get("capacity_unit_yen_per_kw_year", 0.0), step=10.0, key="fs_capacity_unit",
         help="※要確認：簡易試算＝契約電力合計×単価。実際はOCCTO公表のエリア負担総額×"
              "ピークシェアで算定されるため、目安として利用してください",
     )
     reserve_margin = f4.number_input(
-        "予備費率(%)", value=3.0, min_value=0.0, step=0.5, key="fs_reserve_margin",
+        "予備費率(%)", value=_saved.get("reserve_margin_pct", 3.0), min_value=0.0, step=0.5, key="fs_reserve_margin",
         help="需要見込み誤差に備えて電力調達費に上乗せする率（インバランスの簡易モデル）",
     )
 
@@ -268,22 +275,33 @@ with st.container(border=True):
         vals = [financial_model.DEFAULT_JEPX_PRICE_BY_MONTH_HOUR[(m, h)] for m in season_months for h in hours]
         return round(sum(vals) / len(vals), 1)
 
+    _saved_jepx_raw = _saved.get("jepx_by_month_hour", {})
+
+    def _saved_block_price(hours: list[int], season_months: set[int], fallback: float) -> float:
+        for m in season_months:
+            key = f"{m}-{hours[0]}"
+            if key in _saved_jepx_raw:
+                return _saved_jepx_raw[key]
+        return fallback
+
     _other_months = set(range(1, 13)) - retail_fs.SUMMER_MONTHS
 
     st.caption("夏季（7〜9月）")
     _cols_s = st.columns(5)
     _summer_prices = {}
     for (label, hours), col in zip(_jepx_labels.items(), _cols_s):
+        _default_val = _saved_block_price(hours, retail_fs.SUMMER_MONTHS, _default_block_price(hours, retail_fs.SUMMER_MONTHS))
         _summer_prices[label] = col.number_input(
-            label, min_value=0.0, value=_default_block_price(hours, retail_fs.SUMMER_MONTHS),
+            label, min_value=0.0, value=_default_val,
             step=0.5, key=f"jepx_summer_{label}",
         )
     st.caption("その他季")
     _cols_o = st.columns(5)
     _other_prices = {}
     for (label, hours), col in zip(_jepx_labels.items(), _cols_o):
+        _default_val = _saved_block_price(hours, _other_months, _default_block_price(hours, _other_months))
         _other_prices[label] = col.number_input(
-            label, min_value=0.0, value=_default_block_price(hours, _other_months),
+            label, min_value=0.0, value=_default_val,
             step=0.5, key=f"jepx_other_{label}",
         )
 
@@ -312,19 +330,25 @@ local_flags: dict[str, bool] = {}
 with st.container(border=True):
     st.markdown("**⑥ 電源別 調達コスト・排出係数・地域内フラグ**")
     st.caption("相対電源（固定単価での相対契約）も「電源管理」で登録した電源として、ここで単価を設定できます。")
+    _saved_source_costs = _saved.get("source_costs", {})
+    _saved_emission_factors = _saved.get("emission_factors", {})
+    _saved_local_flags = _saved.get("local_flags", {})
     if _all_src_names:
         for sn in _all_src_names:
             sc1, sc2, sc3 = st.columns([2, 1, 1])
             sc1.markdown(f"　{sn}")
             source_costs[sn] = sc1.number_input(
-                "発電コスト(円/kWh)", min_value=0.0, value=_src_default_cost[sn],
+                "発電コスト(円/kWh)", min_value=0.0,
+                value=_saved_source_costs.get(sn, _src_default_cost[sn]),
                 step=0.5, key=f"fs_cost_{sn}", label_visibility="collapsed",
             )
             emission_factors[sn] = sc2.number_input(
-                "排出係数(kg-CO2/kWh)", min_value=0.0, value=0.0,
+                "排出係数(kg-CO2/kWh)", min_value=0.0, value=_saved_emission_factors.get(sn, 0.0),
                 step=0.01, key=f"fs_emission_{sn}",
             )
-            local_flags[sn] = sc3.checkbox("地域内電源", value=False, key=f"fs_local_{sn}")
+            local_flags[sn] = sc3.checkbox(
+                "地域内電源", value=_saved_local_flags.get(sn, False), key=f"fs_local_{sn}",
+            )
     else:
         st.caption("電源が登録されていません（「データ読み込み」でアップロードするか「電源管理」で登録してください）。"
                    "登録がない場合は全量をJEPX市場から調達する前提で試算します。")
@@ -336,7 +360,7 @@ with st.container(border=True):
 
     _sga_default = st.session_state.get("fs_sga_items")
     if _sga_default is None:
-        _sga_default = retail_fs.default_sga_items()
+        _sga_default = _saved.get("sga_items") or retail_fs.default_sga_items()
     _sga_df = pd.DataFrame(
         [{"費目": k, "年額(円)": v} for k, v in _sga_default.items()]
     )
@@ -344,7 +368,7 @@ with st.container(border=True):
         _sga_df,
         column_config={
             "費目": st.column_config.TextColumn("費目"),
-            "年額(円)": st.column_config.NumberColumn("年額(円)", min_value=0.0, step=10000.0),
+            "年額(円)": st.column_config.NumberColumn("年額(円)", min_value=0.0, step=10000.0, format="%,d"),
         },
         hide_index=True, use_container_width=True, num_rows="dynamic", key="fs_sga_editor",
     )
@@ -357,13 +381,14 @@ with st.container(border=True):
 
     tax_rate = st.number_input(
         "法人税等 実効税率(%)", min_value=0.0, max_value=60.0,
-        value=retail_fs.DEFAULT_CORPORATE_TAX_RATE_PCT, step=0.5, key="fs_tax_rate",
+        value=_saved.get("corporate_tax_rate_pct", retail_fs.DEFAULT_CORPORATE_TAX_RATE_PCT),
+        step=0.5, key="fs_tax_rate",
         help="※要確認・簡易計算：営業利益が黒字の場合のみ課税（繰越欠損金等は考慮しません）。"
              "資本金・所得区分・地方税率により実際の実効税率は変動するため、税理士等にご確認ください。",
     )
 
 # ── シナリオ設計を組み立てて保存 ──────────────────────────────────────
-st.session_state["fs_design"] = {
+_fs_design = {
     "tariff_plans": [asdict(p) for p in tariff_plans],
     "facility_configs": [asdict(c) for c in facility_configs],
     "transmission_rates": {vc: asdict(r) for vc, r in transmission_rates.items()},
@@ -378,6 +403,13 @@ st.session_state["fs_design"] = {
     "sga_items": sga_items,
     "corporate_tax_rate_pct": tax_rate,
 }
+st.session_state["fs_design"] = _fs_design
 
 st.markdown("---")
-st.success("✅ シナリオ設計を反映しました。「試算結果」ページで試算を実行できます。")
+st.caption(
+    "設定内容は「試算結果」ページですぐに使えます。ブラウザを閉じても引き継ぎたい場合は、"
+    "下のボタンで保存してください（① 料金プラン・② 施設設定は既にそれぞれ個別に保存済みです）。"
+)
+if st.button("💾 シナリオ設計を保存", type="primary", key="fs_design_save"):
+    retail_fs.save_fs_design(_fs_design)
+    st.success("✅ シナリオ設計を保存しました。次回アクセス時も同じ設定が復元されます。")

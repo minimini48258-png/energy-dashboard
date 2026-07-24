@@ -143,7 +143,14 @@ else:
         ]
         _pl_df = pd.DataFrame(_pl_rows, columns=["項目", "金額(円)", "対売上高(%)"])
         _pl_df["金額(円)"] = _pl_df["金額(円)"].round(0).astype(int)
-        st.dataframe(_pl_df.set_index("項目"), use_container_width=True)
+        st.dataframe(
+            _pl_df.set_index("項目"),
+            use_container_width=True,
+            column_config={
+                "金額(円)": st.column_config.NumberColumn("金額(円)", format="%,d"),
+                "対売上高(%)": st.column_config.NumberColumn("対売上高(%)", format="%.1f%%"),
+            },
+        )
 
         r1, r2, r3, r4 = st.columns(4)
         r1.metric("売上高", f"{_annual['sales_revenue']/10000:,.0f} 万円")
@@ -170,7 +177,11 @@ else:
             with st.expander("月別数値テーブル"):
                 _tbl = _monthly.copy()
                 _tbl["month"] = _tbl["month"].dt.strftime("%Y-%m")
-                st.dataframe(_tbl.set_index("month"), use_container_width=True)
+                _tbl_col_config = {
+                    c: st.column_config.NumberColumn(c, format="%.1f%%" if c.endswith("_pct") else "%,.0f")
+                    for c in _tbl.columns if c != "month"
+                }
+                st.dataframe(_tbl.set_index("month"), use_container_width=True, column_config=_tbl_col_config)
 
         _sens_df = st.session_state.get("retail_fs_sensitivity")
         if _sens_df is not None and not _sens_df.empty:

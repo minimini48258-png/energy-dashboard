@@ -107,13 +107,29 @@ def aggregate_hourly_avg(df: pd.DataFrame, by_facility: bool = False) -> pd.Data
 # パターン分析
 # ---------------------------------------------------------------------------
 
+_SEASON_BY_MONTH = {
+    12: "冬", 1: "冬", 2: "冬",
+    3: "春", 4: "春", 5: "春",
+    6: "夏", 7: "夏", 8: "夏",
+    9: "秋", 10: "秋", 11: "秋",
+}
+
+
+def assign_season(dt_series: pd.Series) -> pd.Series:
+    """月から季節（春夏秋冬）を判定する。3-5月=春, 6-8月=夏, 9-11月=秋, 12,1,2月=冬。"""
+    return dt_series.dt.month.map(_SEASON_BY_MONTH)
+
+
+def assign_day_type(dt_series: pd.Series) -> pd.Series:
+    """曜日から平日・休日を判定する（土日=休日の簡易判定。祝日は考慮しない）。"""
+    return dt_series.dt.dayofweek.apply(lambda d: "休日" if d >= 5 else "平日")
+
+
 def weekday_vs_holiday(df: pd.DataFrame) -> pd.DataFrame:
     """平日・休日別の時間帯平均を返す。"""
     df = df.copy()
     df["hour"] = df["datetime"].dt.hour
-    df["day_type"] = df["datetime"].dt.dayofweek.apply(
-        lambda d: "休日" if d >= 5 else "平日"
-    )
+    df["day_type"] = assign_day_type(df["datetime"])
     return (
         df.groupby(["hour", "day_type"], as_index=False)["consumption_kwh"]
         .mean()
