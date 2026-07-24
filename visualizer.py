@@ -5,7 +5,7 @@ Plotly を使ってグラフを生成する関数群。
 
 from __future__ import annotations
 
-__version__ = "1.1.0"  # supply_demand_balance_chart, monthly_pnl_chart, hourly_pattern_bar 追加
+__version__ = "1.2.0"  # supply_demand_balance_chart, monthly_pnl_chart, hourly_pattern_bar, retail_fs_pl_chart, retail_fs_sensitivity_chart 追加
 
 import plotly.express as px
 import plotly.graph_objects as go
@@ -668,5 +668,92 @@ def hourly_pattern_bar(
         yaxis=dict(title="出力比 (%)", range=[0, 110]),
         margin=dict(l=20, r=20, t=50, b=20),
         height=220,
+    )
+    return fig
+
+
+# ---------------------------------------------------------------------------
+# 小売FS：月別損益計算書ふうチャート
+# ---------------------------------------------------------------------------
+
+def retail_fs_pl_chart(
+    monthly_df: pd.DataFrame,
+    title: str = "小売FS 月別収支（万円）",
+) -> go.Figure:
+    """売上高の内訳（正）・売上原価の内訳（負）の積み上げバー＋粗利益の折れ線。"""
+    df = monthly_df.copy()
+    df["month_str"] = df["month"].dt.strftime("%Y-%m")
+    scale = 10_000  # 円 → 万円
+
+    fig = go.Figure()
+    fig.add_trace(go.Bar(
+        x=df["month_str"], y=df["basic_revenue"] / scale,
+        name="基本料金", marker_color="#264653", opacity=0.9,
+    ))
+    fig.add_trace(go.Bar(
+        x=df["month_str"], y=df["volumetric_revenue"] / scale,
+        name="従量料金", marker_color="#2A9D8F", opacity=0.9,
+    ))
+    fig.add_trace(go.Bar(
+        x=df["month_str"], y=df["fuel_adj_revenue"] / scale,
+        name="燃料費調整額", marker_color="#8AB17D", opacity=0.9,
+    ))
+    fig.add_trace(go.Bar(
+        x=df["month_str"], y=df["market_sale_revenue"] / scale,
+        name="市場売却収入", marker_color="#A8DADC", opacity=0.9,
+    ))
+    fig.add_trace(go.Bar(
+        x=df["month_str"], y=-df["procurement_cost"] / scale,
+        name="電力調達費", marker_color="#E76F51", opacity=0.85,
+    ))
+    fig.add_trace(go.Bar(
+        x=df["month_str"], y=-df["transmission_cost"] / scale,
+        name="託送料金", marker_color="#F4A261", opacity=0.85,
+    ))
+    fig.add_trace(go.Bar(
+        x=df["month_str"], y=-df["capacity_contribution"] / scale,
+        name="容量拠出金", marker_color="#C73E1D", opacity=0.85,
+    ))
+    fig.add_trace(go.Scatter(
+        x=df["month_str"], y=df["gross_profit"] / scale,
+        name="売上総利益（粗利益）",
+        line=dict(color="#1A1A1A", width=3),
+        mode="lines+markers",
+        marker=dict(size=6),
+    ))
+
+    fig.update_layout(
+        barmode="relative",
+        title=title,
+        xaxis_title="月",
+        yaxis_title="万円",
+        hovermode="x unified",
+        margin=dict(l=20, r=20, t=50, b=20),
+        legend=dict(orientation="h", yanchor="bottom", y=1.02, xanchor="right", x=1),
+    )
+    return fig
+
+
+def retail_fs_sensitivity_chart(
+    sensitivity_df: pd.DataFrame,
+    title: str = "感度分析：JEPX価格シフトと粗利益",
+) -> go.Figure:
+    """JEPX価格 ±シフトごとの売上総利益（粗利益）を棒グラフで表示。"""
+    df = sensitivity_df.copy()
+    scale = 10_000
+    labels = [f"{s:+.0f}円/kWh" if s != 0 else "±0（基準）" for s in df["shift_yen"]]
+    fig = go.Figure(go.Bar(
+        x=labels,
+        y=df["gross_profit"] / scale,
+        marker_color=["#E76F51" if s < 0 else ("#2A9D8F" if s > 0 else "#264653") for s in df["shift_yen"]],
+        text=[f"{v/scale:,.0f}万円" for v in df["gross_profit"]],
+        textposition="outside",
+    ))
+    fig.update_layout(
+        title=title,
+        xaxis_title="JEPX価格シフト",
+        yaxis_title="売上総利益（粗利益・万円）",
+        margin=dict(l=20, r=20, t=50, b=20),
+        height=350,
     )
     return fig

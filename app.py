@@ -21,6 +21,7 @@ import financial_model
 import grouping
 import pdf_report
 import report_generator
+import retail_fs
 import solar_simulator
 import supply_cache_manager
 import supply_loader
@@ -53,6 +54,9 @@ _DEFAULTS: dict = {
     "supply_filenames": [],      # アップロード済みファイル名リスト
     "loaded_supply_file_ids": set(),
     "selected_supply_names": [], # 表示対象として選択した電源名リスト
+    "retail_fs_facilities": None,   # list[dict]（FacilityConfig）。None=未ロード
+    "retail_fs_tariffs": None,       # list[dict]（TariffPlan）。None=未ロード
+    "retail_fs_result": None,        # run_fs() の戻り値
 }
 for _k, _v in _DEFAULTS.items():
     if _k not in st.session_state:
@@ -675,12 +679,13 @@ st.markdown("---")
 # タブ
 # ---------------------------------------------------------------------------
 
-tab_demand, tab_pattern, tab_balance, tab_pnl, tab_supply = st.tabs([
+tab_demand, tab_pattern, tab_balance, tab_pnl, tab_supply, tab_retail_fs = st.tabs([
     "📈 需要カーブ",
     "📊 需要パターン分析",
     "⚡ 需給分析",
     "💰 収支シミュレーション",
     "☀️ PPAシミュレーション",
+    "🏪 小売FS",
 ])
 
 
@@ -1346,3 +1351,375 @@ with tab_supply:
                 mime="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
                 use_container_width=True,
             )
+
+
+with tab_retail_fs:
+    st.subheader("🏪 小売FS（詳細収支）試算")
+    st.caption(
+        "施設ごとの契約電力・料金プラン・託送料金・容量拠出金・再エネ賦課金を反映した、"
+        "より実務に近い小売電気事業の売上総利益（粗利益）を試算します。"
+        "単価類の初期値はあくまで目安値です。実際の数値は各エリアの料金表・託送供給等約款・"
+        "OCCTO公表資料等でご確認のうえ入力してください（※要確認）。"
+    )
+
+    _fs_uploaded = st.session_state.get("supply_df")
+    _fs_supply_parts = []
+    if _fs_uploaded is not None:
+        _fs_sel = st.session_state.get("selected_supply_names", [])
+        _fs_filtered = (
+            _fs_uploaded[_fs_uploaded["source_name"].isin(_fs_sel)]
+            if _fs_sel else _fs_uploaded
+        )
+        _fs_supply_parts.append(_fs_filtered)
+    _fs_sources = [supply_planner.SupplySource(**s) for s in st.session_state.get("supply_sources", [])]
+
+    # ── ① 料金プラン ────────────────────────────────────────────────────
+    if st.session_state["retail_fs_tariffs"] is None:
+        _loaded_plans = retail_fs.load_tariff_plans()
+        st.session_state["retail_fs_tariffs"] = [
+            asdict(p) for p in (_loaded_plans or retail_fs.default_tariff_plans())
+        ]
+    _fs_plans_current = [retail_fs.TariffPlan(**d) for d in st.session_state["retail_fs_tariffs"]]
+
+    with st.container(border=True):
+        st.markdown("**① 料金プラン（基本料金＋従量料金）**")
+        st.caption("プランごとに基本料金単価と従量料金（一律 または 時間帯別・昼夜2区分）を設定します。")
+
+        _fs_updated_plans: list[retail_fs.TariffPlan] = []
+        for _i, _plan in enumerate(_fs_plans_current):
+            with st.expander(f"{_plan.name}（{_plan.voltage_class}）", expanded=False):
+                _c1, _c2, _c3 = st.columns(3)
+                _new_name = _c1.text_input("プラン名", value=_plan.name, key=f"fs_plan_name_{_i}")
+                _new_voltage = _c2.selectbox(
+                    "電圧区分", retail_fs.VOLTAGE_CLASSES,
+                    index=retail_fs.VOLTAGE_CLASSES.index(_plan.voltage_class),
+                    key=f"fs_plan_voltage_{_i}",
+                )
+                _new_basic = _c3.number_input(
+                    "基本料金単価(円/kW・月)", min_value=0.0, value=_plan.basic_yen_per_kw,
+                    step=10.0, key=f"fs_plan_basic_{_i}",
+                )
+
+                _mode_label = st.radio(
+                    "従量料金モード", ["一律", "時間帯別（昼夜2区分）"],
+                    index=0 if _plan.volumetric_mode == "flat" else 1,
+                    key=f"fs_plan_mode_{_i}", horizontal=True,
+                )
+                _new_mode = "flat" if _mode_label == "一律" else "tou"
+
+                if _new_mode == "flat":
+                    _new_flat = st.number_input(
+                        "従量単価(円/kWh)", min_value=0.0, value=_plan.flat_rate,
+                        step=0.5, key=f"fs_plan_flat_{_i}",
+                    )
+                    _new_day, _new_night = _plan.day_rate, _plan.night_rate
+                else:
+                    _dcol, _ncol = st.columns(2)
+                    _new_day = _dcol.number_input(
+                        "昼間単価（8-22時・円/kWh）", min_value=0.0, value=_plan.day_rate,
+                        step=0.5, key=f"fs_plan_day_{_i}",
+                    )
+                    _new_night = _ncol.number_input(
+                        "夜間単価（22-8時・円/kWh）", min_value=0.0, value=_plan.night_rate,
+                        step=0.5, key=f"fs_plan_night_{_i}",
+                    )
+                    _new_flat = _plan.flat_rate
+
+                _new_pf = st.checkbox(
+                    "力率割引/割増を適用（高圧・特別高圧、基準85%・1ポイント=1%）",
+                    value=_plan.power_factor_discount, key=f"fs_plan_pf_{_i}",
+                )
+                _delete = st.button("🗑 このプランを削除", key=f"fs_plan_delete_{_i}")
+
+            if _delete:
+                continue
+            _fs_updated_plans.append(retail_fs.TariffPlan(
+                name=_new_name, voltage_class=_new_voltage, basic_yen_per_kw=_new_basic,
+                volumetric_mode=_new_mode, flat_rate=_new_flat,
+                day_rate=_new_day, night_rate=_new_night,
+                power_factor_discount=_new_pf,
+            ))
+
+        _pcol1, _pcol2 = st.columns(2)
+        with _pcol1:
+            if st.button("➕ 新規プランを追加", key="fs_plan_add_new"):
+                _fs_updated_plans.append(
+                    retail_fs.TariffPlan(name=f"新規プラン{len(_fs_updated_plans) + 1}")
+                )
+                st.session_state["retail_fs_tariffs"] = [asdict(p) for p in _fs_updated_plans]
+                retail_fs.save_tariff_plans(_fs_updated_plans)
+                st.rerun()
+        with _pcol2:
+            if st.button("💾 料金プランを保存", type="primary", key="fs_plan_save"):
+                st.session_state["retail_fs_tariffs"] = [asdict(p) for p in _fs_updated_plans]
+                retail_fs.save_tariff_plans(_fs_updated_plans)
+                st.success("料金プランを保存しました。")
+                st.rerun()
+
+        _fs_tariff_plans = _fs_updated_plans or _fs_plans_current
+        _fs_plan_names = [p.name for p in _fs_tariff_plans]
+
+    # ── ② 施設設定（契約電力・電圧区分・料金プラン割当） ───────────────
+    if st.session_state["retail_fs_facilities"] is None:
+        st.session_state["retail_fs_facilities"] = [
+            asdict(c) for c in retail_fs.load_facility_configs()
+        ]
+    _fs_existing_cfg = {c["facility_name"]: c for c in st.session_state["retail_fs_facilities"]}
+
+    with st.container(border=True):
+        st.markdown("**② 施設設定（契約電力・電圧区分・料金プラン割当）**")
+        st.caption("契約電力の初期値は実績30分値のピークから自動推計した目安です。必要に応じて修正してください。")
+
+        _fs_default_plan = _fs_plan_names[1] if len(_fs_plan_names) > 1 else (
+            _fs_plan_names[0] if _fs_plan_names else ""
+        )
+        _fs_fac_rows = []
+        for _name in facility_names:
+            _cfg = _fs_existing_cfg.get(_name)
+            if _cfg is not None and _cfg.get("tariff_plan_name") in _fs_plan_names:
+                _fs_fac_rows.append(_cfg)
+            else:
+                _fs_fac_rows.append({
+                    "facility_name": _name,
+                    "contract_kw": retail_fs.suggest_contract_kw(filtered_base, _name),
+                    "voltage_class": "高圧",
+                    "power_factor_pct": 100.0,
+                    "tariff_plan_name": _fs_default_plan,
+                })
+        _fs_fac_df = pd.DataFrame(_fs_fac_rows)
+
+        _fs_edited_fac_df = st.data_editor(
+            _fs_fac_df,
+            column_config={
+                "facility_name": st.column_config.TextColumn("施設名", disabled=True),
+                "contract_kw": st.column_config.NumberColumn("契約電力(kW)", min_value=0.0, step=5.0),
+                "voltage_class": st.column_config.SelectboxColumn("電圧区分", options=retail_fs.VOLTAGE_CLASSES),
+                "power_factor_pct": st.column_config.NumberColumn("力率(%)", min_value=50.0, max_value=105.0, step=1.0),
+                "tariff_plan_name": st.column_config.SelectboxColumn("料金プラン", options=_fs_plan_names),
+            },
+            hide_index=True,
+            use_container_width=True,
+            key="retail_fs_facility_editor",
+        )
+        if st.button("💾 施設設定を保存", key="fs_facility_save"):
+            _records = _fs_edited_fac_df.to_dict("records")
+            st.session_state["retail_fs_facilities"] = _records
+            retail_fs.save_facility_configs([retail_fs.FacilityConfig(**r) for r in _records])
+            st.success("施設設定を保存しました。")
+
+    # ── ③ 託送料金（電圧区分別） ─────────────────────────────────────────
+    with st.container(border=True):
+        st.markdown("**③ 託送料金（電圧区分別）**")
+        _fs_default_trans = retail_fs.default_transmission_rates()
+        _fs_transmission_rates: dict[str, retail_fs.TransmissionRate] = {}
+        _trans_cols = st.columns(3)
+        for _vc, _col in zip(retail_fs.VOLTAGE_CLASSES, _trans_cols):
+            with _col:
+                st.caption(_vc)
+                _b = st.number_input(
+                    "基本単価(円/kW・月)", min_value=0.0,
+                    value=_fs_default_trans[_vc].basic_yen_per_kw, step=10.0,
+                    key=f"fs_trans_basic_{_vc}",
+                )
+                _v = st.number_input(
+                    "従量単価(円/kWh)", min_value=0.0,
+                    value=_fs_default_trans[_vc].volumetric_yen_per_kwh, step=0.1,
+                    key=f"fs_trans_vol_{_vc}",
+                )
+                _fs_transmission_rates[_vc] = retail_fs.TransmissionRate(
+                    _vc, basic_yen_per_kw=_b, volumetric_yen_per_kwh=_v
+                )
+
+    # ── ④ 燃料費調整・再エネ賦課金・容量拠出金・予備費率 ─────────────────
+    with st.container(border=True):
+        st.markdown("**④ 燃料費調整・再エネ賦課金・容量拠出金・予備費率**")
+        _f1, _f2, _f3, _f4 = st.columns(4)
+        _fs_fuel_adj = _f1.number_input(
+            "燃料費調整単価(円/kWh)", value=0.0, step=0.1, key="fs_fuel_adj",
+            help="※要確認：エリア・月別の実際の燃調単価をご確認のうえ入力してください",
+        )
+        _fs_levy = _f2.number_input(
+            "再エネ賦課金単価(円/kWh)", value=3.98, step=0.01, key="fs_levy",
+            help="※要確認：年度により変更されます。最新の公表値をご確認ください",
+        )
+        _fs_capacity_unit = _f3.number_input(
+            "容量拠出金単価(円/kW・年)", value=0.0, step=10.0, key="fs_capacity_unit",
+            help="※要確認：簡易試算＝契約電力合計×単価。実際はOCCTO公表のエリア負担総額×"
+                 "ピークシェアで算定されるため、目安として利用してください",
+        )
+        _fs_reserve_margin = _f4.number_input(
+            "予備費率(%)", value=3.0, min_value=0.0, step=0.5, key="fs_reserve_margin",
+            help="需要見込み誤差に備えて電力調達費に上乗せする率（インバランスの簡易モデル）",
+        )
+
+    # ── ⑤ JEPX想定単価（時間帯別） ───────────────────────────────────────
+    with st.container(border=True):
+        st.markdown("**⑤ JEPX想定単価（時間帯別）**")
+        st.caption("デフォルトは目安値です。実データに合わせて調整してください。")
+        _fs_jepx_labels = {
+            "深夜（0〜6時）":   list(range(0, 6)),
+            "朝（6〜9時）":     list(range(6, 9)),
+            "日中（9〜16時）":  list(range(9, 16)),
+            "夕方（16〜20時）": list(range(16, 20)),
+            "夜（20〜24時）":   list(range(20, 24)),
+        }
+        _fs_jepx_defaults = {
+            "深夜（0〜6時）": 9.0, "朝（6〜9時）": 18.0,
+            "日中（9〜16時）": 15.0, "夕方（16〜20時）": 21.0, "夜（20〜24時）": 12.0,
+        }
+        _fs_jepx_cols = st.columns(5)
+        _fs_jepx_block_prices = {}
+        for (_label, _hours), _col in zip(_fs_jepx_labels.items(), _fs_jepx_cols):
+            _fs_jepx_block_prices[_label] = _col.number_input(
+                _label, min_value=0.0, value=_fs_jepx_defaults[_label],
+                step=0.5, key=f"fs_jepx_{_label}",
+            )
+        _fs_jepx_by_hour: dict[int, float] = {}
+        for _label, _hours in _fs_jepx_labels.items():
+            for _h in _hours:
+                _fs_jepx_by_hour[_h] = _fs_jepx_block_prices[_label]
+
+    # ── ⑥ 電源別 調達コスト・排出係数・地域内フラグ ──────────────────────
+    _fs_all_src_names: list[str] = []
+    _fs_src_default_cost: dict[str, float] = {}
+    if _fs_uploaded is not None:
+        for _sn in sorted(_fs_uploaded["source_name"].unique()):
+            _fs_all_src_names.append(_sn)
+            _fs_src_default_cost[_sn] = 8.0
+    for _src in _fs_sources:
+        if _src.name not in _fs_all_src_names:
+            _fs_all_src_names.append(_src.name)
+        _fs_src_default_cost[_src.name] = _src.cost_per_kwh
+
+    _fs_source_costs: dict[str, float] = {}
+    _fs_emission_factors: dict[str, float] = {}
+    _fs_local_flags: dict[str, bool] = {}
+    with st.container(border=True):
+        st.markdown("**⑥ 電源別 調達コスト・排出係数・地域内フラグ**")
+        if _fs_all_src_names:
+            for _sn in _fs_all_src_names:
+                _sc1, _sc2, _sc3 = st.columns([2, 1, 1])
+                _sc1.markdown(f"　{_sn}")
+                _fs_source_costs[_sn] = _sc1.number_input(
+                    "発電コスト(円/kWh)", min_value=0.0, value=_fs_src_default_cost[_sn],
+                    step=0.5, key=f"fs_cost_{_sn}", label_visibility="collapsed",
+                )
+                _fs_emission_factors[_sn] = _sc2.number_input(
+                    "排出係数(kg-CO2/kWh)", min_value=0.0, value=0.0,
+                    step=0.01, key=f"fs_emission_{_sn}",
+                )
+                _fs_local_flags[_sn] = _sc3.checkbox(
+                    "地域内電源", value=False, key=f"fs_local_{_sn}",
+                )
+        else:
+            st.caption("電源が登録されていません（サイドバーからアップロードするか「電源管理」で登録してください）。"
+                       "登録がない場合は全量をJEPX市場から調達する前提で試算します。")
+
+    # ── 分析期間・試算実行 ────────────────────────────────────────────────
+    fs_period = st.selectbox(
+        "分析期間", ["全データ期間", "直近1年", "直近6か月", "直近3か月"], key="fs_period",
+    )
+    _fs_max = filtered_base["datetime"].max()
+    _fs_period_map = {
+        "全データ期間": filtered_base,
+        "直近1年":   analyzer.filter_by_period(filtered_base, _fs_max - timedelta(days=365), _fs_max),
+        "直近6か月": analyzer.filter_by_period(filtered_base, _fs_max - timedelta(days=180), _fs_max),
+        "直近3か月": analyzer.filter_by_period(filtered_base, _fs_max - timedelta(days=90),  _fs_max),
+    }
+    fs_demand_df = _fs_period_map[fs_period]
+
+    _fs_facility_configs = [
+        retail_fs.FacilityConfig(**r) for r in _fs_edited_fac_df.to_dict("records")
+    ]
+
+    if st.button("▶ 小売FS試算実行", type="primary", key="run_retail_fs"):
+        with st.spinner("計算中..."):
+            _fs_ts = pd.DatetimeIndex(fs_demand_df["datetime"].sort_values().unique())
+            _supply_parts = list(_fs_supply_parts)
+            if _fs_sources:
+                _supply_parts.append(supply_planner.combine_supply_profiles(_fs_sources, _fs_ts))
+            fs_supply_df = (
+                pd.concat(_supply_parts, ignore_index=True) if _supply_parts
+                else pd.DataFrame(columns=["datetime", "source_name", "supply_kwh"])
+            )
+            fs_balance_df = financial_model.calc_balance(fs_demand_df, fs_supply_df)
+
+            result = retail_fs.run_fs(
+                demand_df=fs_demand_df,
+                balance_df=fs_balance_df,
+                supply_df=fs_supply_df,
+                facility_configs=_fs_facility_configs,
+                tariff_plans=_fs_tariff_plans,
+                transmission_rates=_fs_transmission_rates,
+                source_costs=_fs_source_costs,
+                jepx_price_by_hour=_fs_jepx_by_hour,
+                fuel_adjustment_yen_per_kwh=_fs_fuel_adj,
+                renewable_levy_yen_per_kwh=_fs_levy,
+                capacity_unit_yen_per_kw_year=_fs_capacity_unit,
+                reserve_margin_pct=_fs_reserve_margin,
+            )
+            st.session_state["retail_fs_result"] = result
+
+            _annual = result["annual"]
+            _other_revenue = _annual["basic_revenue"] + _annual["volumetric_revenue"] + _annual["fuel_adj_revenue"]
+            _other_cost = _annual["transmission_cost"] + _annual["capacity_contribution"]
+            st.session_state["retail_fs_sensitivity"] = retail_fs.sensitivity_jepx_shift(
+                fs_balance_df, fs_supply_df, _fs_source_costs, _fs_jepx_by_hour, _fs_reserve_margin,
+                base_gross_profit=_annual["gross_profit"],
+                other_revenue=_other_revenue, other_cost=_other_cost,
+            )
+            st.session_state["retail_fs_co2"] = retail_fs.calc_co2_and_local_ratio(
+                fs_balance_df, fs_supply_df, _fs_emission_factors, _fs_local_flags,
+            )
+
+    fs_result = st.session_state.get("retail_fs_result")
+
+    if fs_result is None:
+        st.info("設定を確認して「小売FS試算実行」を押してください。")
+    else:
+        _annual = fs_result["annual"]
+        _monthly = fs_result["monthly"]
+        _co2 = st.session_state.get("retail_fs_co2") or {}
+
+        st.markdown("---")
+        st.markdown("**損益計算書ふうサマリー（期間合計）**")
+        _pl_rows = [
+            ("売上高", _annual["sales_revenue"], 100.0),
+            ("　基本料金", _annual["basic_revenue"], None),
+            ("　従量料金", _annual["volumetric_revenue"], None),
+            ("　燃料費調整額", _annual["fuel_adj_revenue"], None),
+            ("　再エネ賦課金（預り金）", _annual["levy_revenue"], None),
+            ("　市場売却収入", _annual["market_sale_revenue"], None),
+            ("売上原価", _annual["cost_of_sales"] + _annual["levy_revenue"], None),
+            ("　電力調達費", _annual["procurement_cost"], None),
+            ("　託送料金", _annual["transmission_cost"], None),
+            ("　容量拠出金", _annual["capacity_contribution"], None),
+            ("　再エネ賦課金（納付）", _annual["levy_revenue"], None),
+            ("売上総利益（粗利益）", _annual["gross_profit"], _annual["gross_margin_pct"]),
+        ]
+        _pl_df = pd.DataFrame(_pl_rows, columns=["項目", "金額(円)", "対売上高(%)"])
+        _pl_df["金額(円)"] = _pl_df["金額(円)"].round(0).astype(int)
+        st.dataframe(_pl_df.set_index("項目"), use_container_width=True)
+
+        r1, r2, r3, r4 = st.columns(4)
+        r1.metric("売上高", f"{_annual['sales_revenue']/10000:,.0f} 万円")
+        r2.metric("売上総利益（粗利益）", f"{_annual['gross_profit']/10000:,.0f} 万円")
+        r3.metric("粗利益率", f"{_annual['gross_margin_pct']:.1f} %")
+        r4.metric("契約電力合計", f"{_annual['contract_kw_total']:,.0f} kW")
+
+        if _co2:
+            c1, c2 = st.columns(2)
+            c1.metric("CO2排出量", f"{_co2['co2_total_t']:,.1f} t-CO2")
+            c2.metric("地産電源比率", f"{_co2['local_ratio_pct']:.1f} %")
+
+        if not _monthly.empty:
+            st.plotly_chart(visualizer.retail_fs_pl_chart(_monthly), use_container_width=True)
+            with st.expander("月別数値テーブル"):
+                _tbl = _monthly.copy()
+                _tbl["month"] = _tbl["month"].dt.strftime("%Y-%m")
+                st.dataframe(_tbl.set_index("month"), use_container_width=True)
+
+        _sens_df = st.session_state.get("retail_fs_sensitivity")
+        if _sens_df is not None and not _sens_df.empty:
+            st.markdown("**感度分析：JEPX価格が変動した場合の売上総利益（粗利益）**")
+            st.plotly_chart(visualizer.retail_fs_sensitivity_chart(_sens_df), use_container_width=True)
