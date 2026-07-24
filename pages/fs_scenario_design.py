@@ -387,6 +387,16 @@ with st.container(border=True):
              "資本金・所得区分・地方税率により実際の実効税率は変動するため、税理士等にご確認ください。",
     )
 
+# ── ⑧ 資金繰りの前提 ────────────────────────────────────────────────
+with st.container(border=True):
+    st.markdown("**⑧ 資金繰りの前提**")
+    capital = st.number_input(
+        "資本金（初期現金残高・円）", min_value=0.0,
+        value=_saved.get("capital_yen", 0.0), step=1_000_000.0, key="fs_capital",
+        help="「試算結果」の資金繰りタブで、現金残高の起点として使用します。"
+             "売掛金・買掛金のタイムラグや設備投資は考慮しない簡易モデルです。",
+    )
+
 # ── シナリオ設計を組み立てて保存 ──────────────────────────────────────
 _fs_design = {
     "tariff_plans": [asdict(p) for p in tariff_plans],
@@ -402,6 +412,7 @@ _fs_design = {
     "local_flags": local_flags,
     "sga_items": sga_items,
     "corporate_tax_rate_pct": tax_rate,
+    "capital_yen": capital,
 }
 st.session_state["fs_design"] = _fs_design
 

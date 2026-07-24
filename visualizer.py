@@ -687,6 +687,84 @@ def scenario_comparison_chart(
     return fig
 
 
+# dataviz スキルの検証済み8色カテゴリカルパレット（固定順・colorblind-safe、隣接ペア用途で確認済み）
+_PALETTE_8 = ["#2a78d6", "#eb6834", "#1baf7a", "#eda100", "#e87ba4", "#008300", "#4a3aa7", "#e34948"]
+
+
+def monthly_breakdown_chart(
+    monthly_df: pd.DataFrame,
+    title: str = "月別収支の内訳",
+) -> go.Figure:
+    """売上高の内訳（正・積み上げ）／費用の内訳（負・積み上げ）＋当期純利益の折れ線。"""
+    df = monthly_df.copy()
+    df["month_str"] = _month_labels(df["month"])
+    scale = 1_000  # 円 → 千円
+
+    _rev_items = [
+        ("basic_revenue", "基本料金"), ("volumetric_revenue", "従量料金"),
+        ("fuel_adj_revenue", "燃料費調整額"), ("market_sale_revenue", "市場売却収入"),
+    ]
+    _cost_items = [
+        ("procurement_cost", "電力調達費"), ("transmission_cost", "託送料金"),
+        ("capacity_contribution", "容量拠出金"), ("sga_cost", "販管費"),
+    ]
+
+    fig = go.Figure()
+    for i, (col, label) in enumerate(_rev_items):
+        if col in df.columns:
+            fig.add_trace(go.Bar(x=df["month_str"], y=df[col] / scale, name=label, marker_color=_PALETTE_8[i]))
+    for i, (col, label) in enumerate(_cost_items):
+        if col in df.columns:
+            fig.add_trace(go.Bar(x=df["month_str"], y=-df[col] / scale, name=label, marker_color=_PALETTE_8[i + 4]))
+    if "net_income" in df.columns:
+        fig.add_trace(go.Scatter(
+            x=df["month_str"], y=df["net_income"] / scale, name="当期純利益",
+            line=dict(color="#1A1A1A", width=3), mode="lines+markers", marker=dict(size=6),
+        ))
+
+    fig.update_layout(
+        barmode="relative",
+        template="plotly_white",
+        title=dict(text=title, font=dict(size=18, color=_FS_TITLE_COLOR)),
+        xaxis=dict(tickangle=-30),
+        yaxis=dict(title="千円"),
+        hovermode="x unified",
+        margin=dict(l=20, r=20, t=60, b=40),
+        legend=dict(title=dict(text="内訳"), orientation="v", yanchor="top", y=1, xanchor="left", x=1.02),
+    )
+    return fig
+
+
+def cash_flow_chart(
+    cashflow_df: pd.DataFrame,
+    title: str = "月次キャッシュフロー",
+) -> go.Figure:
+    """月次キャッシュフロー（棒）＋現金残高（累計・折れ線）。"""
+    df = cashflow_df.copy()
+    df["month_str"] = _month_labels(df["month"])
+    scale = 1_000  # 円 → 千円
+
+    fig = go.Figure()
+    fig.add_trace(go.Bar(
+        x=df["month_str"], y=df["net_cash_flow"] / scale, name="月次キャッシュフロー",
+        marker_color=[FS_PROFIT_COLOR if v >= 0 else FS_COST_COLOR for v in df["net_cash_flow"]],
+    ))
+    fig.add_trace(go.Scatter(
+        x=df["month_str"], y=df["cash_balance"] / scale, name="現金残高（累計）",
+        line=dict(color=_FS_TITLE_COLOR, width=3), mode="lines+markers", marker=dict(size=6),
+    ))
+    fig.update_layout(
+        template="plotly_white",
+        title=dict(text=title, font=dict(size=18, color=_FS_TITLE_COLOR)),
+        xaxis=dict(tickangle=-30),
+        yaxis=dict(title="千円"),
+        hovermode="x unified",
+        margin=dict(l=20, r=20, t=60, b=40),
+        legend=dict(orientation="h", yanchor="bottom", y=1.02, xanchor="right", x=1),
+    )
+    return fig
+
+
 # ---------------------------------------------------------------------------
 # 時間帯別出力パターンチャート
 # ---------------------------------------------------------------------------

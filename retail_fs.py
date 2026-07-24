@@ -544,7 +544,80 @@ def run_fs(
         annual["net_income"] / annual["sales_revenue"] * 100 if annual["sales_revenue"] else 0.0
     )
 
-    return {"monthly": monthly, "annual": annual}
+    # 法人税等は年間ベースで確定させたうえで、月数で均等按分する（月別クリップによる乖離を避けるため）
+    monthly["corporate_tax"] = annual["corporate_tax"] / max(n_months, 1)
+    monthly["net_income"] = monthly["operating_profit"] - monthly["corporate_tax"]
+
+    return {
+        "monthly": monthly,
+        "annual": annual,
+        "facility_revenue": revenue_df,
+        "facility_transmission": transmission_df,
+    }
+
+
+# ---------------------------------------------------------------------------
+# 施設別収支
+# ---------------------------------------------------------------------------
+
+def calc_facility_pl(
+    facility_revenue_df: pd.DataFrame,
+    facility_transmission_df: pd.DataFrame,
+    annual: dict,
+) -> pd.DataFrame:
+    """
+    施設別の収支（期間合計）を試算する。
+    託送料金は施設ごとの実額、電力調達費・容量拠出金はkWh実績に応じた按分（簡易配賦）。
+
+    Returns
+    -------
+    DataFrame: facility_name, kwh, revenue, transmission_cost,
+               allocated_cost, cost_of_sales, gross_profit, gross_margin_pct
+    """
+    if facility_revenue_df.empty:
+        return pd.DataFrame(columns=[
+            "facility_name", "kwh", "revenue", "transmission_cost",
+            "allocated_cost", "cost_of_sales", "gross_profit", "gross_margin_pct",
+        ])
+
+    rev = facility_revenue_df.groupby("facility_name", as_index=False).agg(
+        kwh=("kwh", "sum"), revenue=("total_revenue", "sum"),
+    )
+    if not facility_transmission_df.empty:
+        trans = facility_transmission_df.groupby("facility_name", as_index=False)["transmission_cost"].sum()
+    else:
+        trans = pd.DataFrame(columns=["facility_name", "transmission_cost"])
+
+    fac_df = pd.merge(rev, trans, on="facility_name", how="left").fillna({"transmission_cost": 0.0})
+
+    total_kwh = float(fac_df["kwh"].sum())
+    poolable_cost = float(annual.get("procurement_cost", 0.0)) + float(annual.get("capacity_contribution", 0.0))
+    fac_df["allocated_cost"] = (
+        (fac_df["kwh"] / total_kwh * poolable_cost) if total_kwh > 0 else 0.0
+    )
+    fac_df["cost_of_sales"] = fac_df["transmission_cost"] + fac_df["allocated_cost"]
+    fac_df["gross_profit"] = fac_df["revenue"] - fac_df["cost_of_sales"]
+    fac_df["gross_margin_pct"] = (
+        (fac_df["gross_profit"] / fac_df["revenue"] * 100).where(fac_df["revenue"] != 0, 0.0)
+    )
+    return fac_df.sort_values("revenue", ascending=False).reset_index(drop=True)
+
+
+# ---------------------------------------------------------------------------
+# 資金繰り（月次キャッシュフロー）
+# ---------------------------------------------------------------------------
+
+def calc_cash_flow(monthly_df: pd.DataFrame, capital_yen: float) -> pd.DataFrame:
+    """
+    月次キャッシュフローの簡易試算。
+    売掛金・買掛金のタイムラグ、減価償却・設備投資は考慮せず、
+    当月純利益＝当月キャッシュフローとみなす簡易モデル（※要確認）。
+    現金残高 = 資本金 + 当期純利益の累積。
+    """
+    cf = monthly_df[["month", "net_income"]].copy().sort_values("month").reset_index(drop=True)
+    cf = cf.rename(columns={"net_income": "net_cash_flow"})
+    cf["cash_balance"] = capital_yen + cf["net_cash_flow"].cumsum()
+    return cf
 
 
 def sensitivity_jepx_shift(
