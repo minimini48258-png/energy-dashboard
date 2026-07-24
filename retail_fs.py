@@ -379,6 +379,10 @@ def run_fs(
 
     monthly = pd.merge(rev_monthly, trans_monthly, on="month", how="outer")
     monthly = pd.merge(monthly, procurement_df, on="month", how="outer").sort_values("month").fillna(0.0)
+    # outer merge で片方が空フレームの場合、"month" や数値列が object 型になることがあるため明示的に型を戻す
+    monthly["month"] = pd.to_datetime(monthly["month"])
+    _numeric_cols = [c for c in monthly.columns if c != "month"]
+    monthly[_numeric_cols] = monthly[_numeric_cols].astype(float)
     monthly["capacity_contribution"] = capacity_monthly
     monthly["sales_revenue"] = monthly["total_revenue"] + monthly["market_sale_revenue"]
     monthly["cost_of_sales"] = (

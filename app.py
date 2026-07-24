@@ -1633,44 +1633,54 @@ with tab_retail_fs:
     ]
 
     if st.button("▶ 小売FS試算実行", type="primary", key="run_retail_fs"):
-        with st.spinner("計算中..."):
-            _fs_ts = pd.DatetimeIndex(fs_demand_df["datetime"].sort_values().unique())
-            _supply_parts = list(_fs_supply_parts)
-            if _fs_sources:
-                _supply_parts.append(supply_planner.combine_supply_profiles(_fs_sources, _fs_ts))
-            fs_supply_df = (
-                pd.concat(_supply_parts, ignore_index=True) if _supply_parts
-                else pd.DataFrame(columns=["datetime", "source_name", "supply_kwh"])
-            )
-            fs_balance_df = financial_model.calc_balance(fs_demand_df, fs_supply_df)
+        if fs_demand_df.empty:
+            st.warning("選択した分析期間にデータがありません。分析期間を変更してください。")
+        elif not any(c.tariff_plan_name in _fs_plan_names for c in _fs_facility_configs):
+            st.warning("有効な料金プランが割り当てられた施設がありません。「② 施設設定」で料金プランを選択してください。")
+        else:
+            try:
+                with st.spinner("計算中..."):
+                    _fs_ts = pd.DatetimeIndex(fs_demand_df["datetime"].sort_values().unique())
+                    _supply_parts = list(_fs_supply_parts)
+                    if _fs_sources:
+                        _supply_parts.append(supply_planner.combine_supply_profiles(_fs_sources, _fs_ts))
+                    fs_supply_df = (
+                        pd.concat(_supply_parts, ignore_index=True) if _supply_parts
+                        else pd.DataFrame(columns=["datetime", "source_name", "supply_kwh"])
+                    )
+                    fs_balance_df = financial_model.calc_balance(fs_demand_df, fs_supply_df)
 
-            result = retail_fs.run_fs(
-                demand_df=fs_demand_df,
-                balance_df=fs_balance_df,
-                supply_df=fs_supply_df,
-                facility_configs=_fs_facility_configs,
-                tariff_plans=_fs_tariff_plans,
-                transmission_rates=_fs_transmission_rates,
-                source_costs=_fs_source_costs,
-                jepx_price_by_hour=_fs_jepx_by_hour,
-                fuel_adjustment_yen_per_kwh=_fs_fuel_adj,
-                renewable_levy_yen_per_kwh=_fs_levy,
-                capacity_unit_yen_per_kw_year=_fs_capacity_unit,
-                reserve_margin_pct=_fs_reserve_margin,
-            )
-            st.session_state["retail_fs_result"] = result
+                    result = retail_fs.run_fs(
+                        demand_df=fs_demand_df,
+                        balance_df=fs_balance_df,
+                        supply_df=fs_supply_df,
+                        facility_configs=_fs_facility_configs,
+                        tariff_plans=_fs_tariff_plans,
+                        transmission_rates=_fs_transmission_rates,
+                        source_costs=_fs_source_costs,
+                        jepx_price_by_hour=_fs_jepx_by_hour,
+                        fuel_adjustment_yen_per_kwh=_fs_fuel_adj,
+                        renewable_levy_yen_per_kwh=_fs_levy,
+                        capacity_unit_yen_per_kw_year=_fs_capacity_unit,
+                        reserve_margin_pct=_fs_reserve_margin,
+                    )
+                    st.session_state["retail_fs_result"] = result
 
-            _annual = result["annual"]
-            _other_revenue = _annual["basic_revenue"] + _annual["volumetric_revenue"] + _annual["fuel_adj_revenue"]
-            _other_cost = _annual["transmission_cost"] + _annual["capacity_contribution"]
-            st.session_state["retail_fs_sensitivity"] = retail_fs.sensitivity_jepx_shift(
-                fs_balance_df, fs_supply_df, _fs_source_costs, _fs_jepx_by_hour, _fs_reserve_margin,
-                base_gross_profit=_annual["gross_profit"],
-                other_revenue=_other_revenue, other_cost=_other_cost,
-            )
-            st.session_state["retail_fs_co2"] = retail_fs.calc_co2_and_local_ratio(
-                fs_balance_df, fs_supply_df, _fs_emission_factors, _fs_local_flags,
-            )
+                    _annual = result["annual"]
+                    _other_revenue = _annual["basic_revenue"] + _annual["volumetric_revenue"] + _annual["fuel_adj_revenue"]
+                    _other_cost = _annual["transmission_cost"] + _annual["capacity_contribution"]
+                    st.session_state["retail_fs_sensitivity"] = retail_fs.sensitivity_jepx_shift(
+                        fs_balance_df, fs_supply_df, _fs_source_costs, _fs_jepx_by_hour, _fs_reserve_margin,
+                        base_gross_profit=_annual["gross_profit"],
+                        other_revenue=_other_revenue, other_cost=_other_cost,
+                    )
+                    st.session_state["retail_fs_co2"] = retail_fs.calc_co2_and_local_ratio(
+                        fs_balance_df, fs_supply_df, _fs_emission_factors, _fs_local_flags,
+                    )
+            except Exception as e:
+                st.error("小売FSの試算中にエラーが発生しました。入力内容を確認するか、下記の詳細を開発担当へ共有してください。")
+                st.exception(e)
+                st.session_state["retail_fs_result"] = None
 
     fs_result = st.session_state.get("retail_fs_result")
 

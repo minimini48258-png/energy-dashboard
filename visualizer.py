@@ -682,6 +682,7 @@ def retail_fs_pl_chart(
 ) -> go.Figure:
     """売上高の内訳（正）・売上原価の内訳（負）の積み上げバー＋粗利益の折れ線。"""
     df = monthly_df.copy()
+    df["month"] = pd.to_datetime(df["month"])
     df["month_str"] = df["month"].dt.strftime("%Y-%m")
     scale = 10_000  # 円 → 万円
 
