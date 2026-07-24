@@ -26,6 +26,7 @@ SOURCE_TYPE_LABELS = {
     "hydro": "水力",
     "solar": "太陽光",
     "biomass": "バイオマス",
+    "bilateral": "相対電源",
     "other": "その他",
 }
 SOURCE_TYPE_KEYS = {v: k for k, v in SOURCE_TYPE_LABELS.items()}

@@ -19,10 +19,13 @@ import data_cleaner
 import data_loader
 import financial_model
 import grouping
+import jepx_loader
+import scenario_manager
 import solar_simulator
 import supply_cache_manager
 import supply_loader
 import supply_planner
+import tariff
 import visualizer
 
 st.set_page_config(
@@ -51,6 +54,8 @@ _DEFAULTS: dict = {
     "supply_filenames": [],      # アップロード済みファイル名リスト
     "loaded_supply_file_ids": set(),
     "selected_supply_names": [], # 表示対象として選択した電源名リスト
+    "jepx_actual_df": None,      # アップロード済みJEPX実績価格 DataFrame
+    "scenario_summaries": None,  # シナリオ比較結果
 }
 for _k, _v in _DEFAULTS.items():
     if _k not in st.session_state:
@@ -461,7 +466,10 @@ def _source_form(prefix: str, defaults: dict | None = None) -> dict | None:
 
 
 with st.expander("⚡ 電源管理（供給側の設定）", expanded=False):
-    st.caption("新電力として調達・運用する電源を登録します。需給分析・収支シミュレーションに使用されます。")
+    st.caption(
+        "新電力として調達・運用する電源を登録します。需給分析・収支シミュレーションに使用されます。"
+        "「相対電源」を選ぶと、相対契約（固定単価・契約数量）での電力調達として扱われます。"
+    )
 
     sources_raw: list[dict] = st.session_state.get("supply_sources", [])
     sources = [supply_planner.SupplySource(**s) for s in sources_raw]
@@ -930,20 +938,117 @@ with tab_pnl:
     if not _pnl_supply_parts and not sources_for_pnl:
         st.info("サイドバーから供給データをアップロードするか、「電源管理」で電源を登録してください。")
     else:
-        # ── 価格設定 ────────────────────────────────────────────────────────
-        with st.container(border=True):
-            st.markdown("**① 価格設定**")
-            pc1, pc2, pc3, pc4 = st.columns(4)
-            retail_price   = pc1.number_input("小売単価 (円/kWh)",          min_value=0.0, value=25.0, step=0.5)
-            surplus_price  = pc2.number_input("余剰売電単価 (円/kWh)",       min_value=0.0, value=7.0,  step=0.5)
-            imb_factor     = pc3.number_input("インバランス率 (%)",           min_value=0.0, value=10.0, step=1.0,
-                                               help="調達量のうち計画誤差でインバランスになる割合")
-            imb_premium    = pc4.number_input("インバランスプレミアム (円/kWh)", min_value=0.0, value=3.0, step=0.5,
-                                               help="インバランス精算の追加コスト")
+        # ── 分析期間（施設別料金設計より前に確定させ、対象施設一覧を決める） ──────
+        pnl_period = st.selectbox(
+            "分析期間", ["全データ期間", "直近1年", "直近6か月", "直近3か月"],
+            key="pnl_period",
+        )
+        _pmax = filtered_base["datetime"].max()
+        _pmap = {
+            "全データ期間": filtered_base,
+            "直近1年":   analyzer.filter_by_period(filtered_base, _pmax - timedelta(days=365), _pmax),
+            "直近6か月": analyzer.filter_by_period(filtered_base, _pmax - timedelta(days=180), _pmax),
+            "直近3か月": analyzer.filter_by_period(filtered_base, _pmax - timedelta(days=90),  _pmax),
+        }
+        pnl_demand_df = _pmap[pnl_period]
+        _pnl_facilities = sorted(pnl_demand_df["facility_name"].dropna().unique().tolist())
 
+        # ── ① 料金設計（中部電力型・施設別） ──────────────────────────────────
         with st.container(border=True):
-            st.markdown("**② JEPX 想定単価（時間帯別）**")
-            st.caption("デフォルトは 2023〜24 年平均の目安値。実データに合わせて調整してください。")
+            st.markdown("**① 料金設計（施設別・中部電力型）**")
+            st.caption(
+                "出典：中部電力ミライズ公式サイト（高圧業務用電力・従量電灯B、2026年7月時点）"
+                "／再エネ賦課金は経済産業省公表値。数値は目安のため ※要確認・実際の契約単価で調整してください。"
+            )
+
+            with st.expander("料金単価テーブル（編集可）", expanded=False):
+                st.markdown("**高圧（業務用電力）**")
+                hv1, hv2, hv3, hv4, hv5 = st.columns(5)
+                hv_basic = hv1.number_input("基本料金 (円/kW)", min_value=0.0, value=1860.0, step=10.0, key="tariff_hv_basic")
+                hv_summer = hv2.number_input("電力量料金 夏季 (円/kWh)", min_value=0.0, value=19.6, step=0.1, key="tariff_hv_summer")
+                hv_other = hv3.number_input("電力量料金 その他季 (円/kWh)", min_value=0.0, value=18.6, step=0.1, key="tariff_hv_other")
+                hv_fuel = hv4.number_input("燃料費調整単価 (円/kWh)", value=0.0, step=0.1, key="tariff_hv_fuel",
+                                            help="月毎に公表される実際の単価を確認のうえ入力してください（※要確認）")
+                hv_levy = hv5.number_input("再エネ賦課金 (円/kWh)", min_value=0.0, value=4.18, step=0.01, key="tariff_hv_levy")
+
+                st.markdown("**低圧（従量電灯B）**")
+                lv1, lv2, lv3, lv4, lv5, lv6 = st.columns(6)
+                lv_basic = lv1.number_input("基本料金 (円/A)", min_value=0.0, value=32.114, step=0.1, key="tariff_lv_basic")
+                lv_t1 = lv2.number_input("第1段階 〜120kWh (円/kWh)", min_value=0.0, value=21.20, step=0.1, key="tariff_lv_t1")
+                lv_t2 = lv3.number_input("第2段階 120〜300kWh (円/kWh)", min_value=0.0, value=25.67, step=0.1, key="tariff_lv_t2")
+                lv_t3 = lv4.number_input("第3段階 300kWh超 (円/kWh)", min_value=0.0, value=28.62, step=0.1, key="tariff_lv_t3")
+                lv_fuel = lv5.number_input("燃料費調整単価 (円/kWh)", value=0.0, step=0.1, key="tariff_lv_fuel",
+                                            help="月毎に公表される実際の単価を確認のうえ入力してください（※要確認）")
+                lv_levy = lv6.number_input("再エネ賦課金 (円/kWh)", min_value=0.0, value=4.18, step=0.01, key="tariff_lv_levy")
+
+            plan_high = tariff.TariffPlan(
+                voltage_class="高圧", basic_charge_per_kw=hv_basic,
+                energy_charge_summer=hv_summer, energy_charge_other=hv_other,
+                fuel_cost_adjustment=hv_fuel, renewable_levy=hv_levy,
+            )
+            plan_low = tariff.TariffPlan(
+                voltage_class="低圧", basic_charge_per_amp=lv_basic,
+                tiered_rates=[(120.0, lv_t1), (300.0, lv_t2), (None, lv_t3)],
+                fuel_cost_adjustment=lv_fuel, renewable_levy=lv_levy,
+            )
+
+            facility_assignments: dict[str, tariff.FacilityTariffAssignment] = {}
+            if _pnl_facilities:
+                for fac in _pnl_facilities:
+                    fc1, fc2, fc3 = st.columns([3, 2, 2])
+                    fc1.markdown(f"　{fac}")
+                    vc = fc2.selectbox(
+                        "契約区分", tariff.VOLTAGE_CLASSES,
+                        key=f"tariff_vc_{fac}", label_visibility="collapsed",
+                    )
+                    if vc == "高圧":
+                        default_cap = tariff.suggest_contract_capacity(pnl_demand_df, fac, "高圧")
+                        cap = fc3.number_input(
+                            "契約電力(kW)", min_value=0.0, value=default_cap, step=1.0,
+                            key=f"tariff_cap_{fac}", label_visibility="collapsed",
+                        )
+                        facility_assignments[fac] = tariff.FacilityTariffAssignment(
+                            facility_name=fac, voltage_class="高圧", contract_kw=cap,
+                        )
+                    else:
+                        default_cap = tariff.suggest_contract_capacity(pnl_demand_df, fac, "低圧")
+                        cap = fc3.number_input(
+                            "契約アンペア(A)", min_value=0.0, value=default_cap, step=10.0,
+                            key=f"tariff_cap_{fac}", label_visibility="collapsed",
+                        )
+                        facility_assignments[fac] = tariff.FacilityTariffAssignment(
+                            facility_name=fac, voltage_class="低圧", contract_amp=cap,
+                        )
+            else:
+                st.caption("対象施設がありません。")
+
+        # ── ② JEPX 想定単価 ────────────────────────────────────────────────
+        with st.container(border=True):
+            st.markdown("**② JEPX 想定単価**")
+
+            jepx_upload = st.file_uploader(
+                "JEPX実績価格ファイル（CSV／Excel）をアップロード（任意）",
+                type=["csv", "xlsx"], key="jepx_actual_upload",
+                help="JEPX公式CSV（受渡日・時刻コード・エリアプライス中部等）または datetime+price の汎用形式に対応",
+            )
+            jepx_actual_series = None
+            if jepx_upload is not None:
+                try:
+                    _jepx_df = jepx_loader.load_jepx_price_file(jepx_upload, filename=jepx_upload.name)
+                    st.session_state["jepx_actual_df"] = _jepx_df
+                    st.success(f"✅ 実績データ使用中：{_jepx_df['datetime'].min()} 〜 {_jepx_df['datetime'].max()}（{len(_jepx_df):,} 件）")
+                except Exception as _jepx_err:
+                    st.error(f"JEPX実績ファイルの読み込みに失敗しました: {_jepx_err}")
+
+            _jepx_actual_df = st.session_state.get("jepx_actual_df")
+            if _jepx_actual_df is not None:
+                jepx_actual_series = _jepx_actual_df.set_index("datetime")["jepx_price_yen"]
+
+            st.caption(
+                "実績データがない時間帯・データ未アップロード時は下記の目安値（季節×時間帯）を使用します。"
+                "出典：JEPXシステムプライス週平均 約19.09円/kWh（新電力ネット, 2026/7/19週）を基準にした季節按分の目安値。"
+                "※要確認・中部エリア固有の値ではありません。"
+            )
             jepx_labels = {
                 "深夜（0〜6時）":    list(range(0, 6)),
                 "朝（6〜9時）":      list(range(6, 9)),
@@ -951,24 +1056,45 @@ with tab_pnl:
                 "夕方（16〜20時）":  list(range(16, 20)),
                 "夜（20〜24時）":    list(range(20, 24)),
             }
-            jepx_defaults = {
-                "深夜（0〜6時）": 9.0, "朝（6〜9時）": 18.0,
-                "日中（9〜16時）": 15.0, "夕方（16〜20時）": 21.0, "夜（20〜24時）": 12.0,
-            }
-            jepx_cols = st.columns(5)
-            jepx_block_prices = {}
-            for (label, hours), col in zip(jepx_labels.items(), jepx_cols):
-                jepx_block_prices[label] = col.number_input(
+
+            def _default_block_price(hours: list[int], season_months: set[int]) -> float:
+                vals = [
+                    financial_model.DEFAULT_JEPX_PRICE_BY_MONTH_HOUR[(m, h)]
+                    for m in season_months for h in hours
+                ]
+                return round(sum(vals) / len(vals), 1)
+
+            _other_months = set(range(1, 13)) - tariff.SUMMER_MONTHS
+
+            st.caption("夏季（7〜9月）")
+            jepx_cols_summer = st.columns(5)
+            jepx_summer_prices = {}
+            for (label, hours), col in zip(jepx_labels.items(), jepx_cols_summer):
+                jepx_summer_prices[label] = col.number_input(
                     label, min_value=0.0,
-                    value=jepx_defaults[label], step=0.5, key=f"jepx_{label}",
+                    value=_default_block_price(hours, tariff.SUMMER_MONTHS), step=0.5,
+                    key=f"jepx_summer_{label}",
                 )
-            jepx_by_hour: dict[int, float] = {}
-            for label, hours in jepx_labels.items():
-                for h in hours:
-                    jepx_by_hour[h] = jepx_block_prices[label]
+            st.caption("その他季")
+            jepx_cols_other = st.columns(5)
+            jepx_other_prices = {}
+            for (label, hours), col in zip(jepx_labels.items(), jepx_cols_other):
+                jepx_other_prices[label] = col.number_input(
+                    label, min_value=0.0,
+                    value=_default_block_price(hours, _other_months), step=0.5,
+                    key=f"jepx_other_{label}",
+                )
+
+            jepx_by_month_hour: dict[tuple[int, int], float] = {}
+            for m in range(1, 13):
+                season_prices = jepx_summer_prices if m in tariff.SUMMER_MONTHS else jepx_other_prices
+                for label, hours in jepx_labels.items():
+                    for h in hours:
+                        jepx_by_month_hour[(m, h)] = season_prices[label]
 
         with st.container(border=True):
-            st.markdown("**③ 発電コスト（電源別）**")
+            st.markdown("**③ 発電・調達コスト（電源別）**")
+            st.caption("相対電源（固定単価での相対契約）も「電源管理」で登録した電源として、ここで単価を設定できます。")
             # アップロード電源とパラメータ設定電源を統合してコスト入力欄を生成
             _all_src_names: list[str] = []
             _all_src_defaults: dict[str, float] = {}
@@ -995,43 +1121,45 @@ with tab_pnl:
             else:
                 st.caption("電源が登録されていません。")
 
-        # ── 分析期間 ────────────────────────────────────────────────────────
-        pnl_period = st.selectbox(
-            "分析期間", ["全データ期間", "直近1年", "直近6か月", "直近3か月"],
-            key="pnl_period",
-        )
-        _pmax = filtered_base["datetime"].max()
-        _pmap = {
-            "全データ期間": filtered_base,
-            "直近1年":   analyzer.filter_by_period(filtered_base, _pmax - timedelta(days=365), _pmax),
-            "直近6か月": analyzer.filter_by_period(filtered_base, _pmax - timedelta(days=180), _pmax),
-            "直近3か月": analyzer.filter_by_period(filtered_base, _pmax - timedelta(days=90),  _pmax),
-        }
-        pnl_demand_df = _pmap[pnl_period]
+        with st.container(border=True):
+            st.markdown("**④ その他前提**")
+            pc2, pc3, pc4 = st.columns(3)
+            surplus_price  = pc2.number_input("余剰売電単価 (円/kWh)",       min_value=0.0, value=7.0,  step=0.5)
+            imb_factor     = pc3.number_input("インバランス率 (%)",           min_value=0.0, value=10.0, step=1.0,
+                                               help="調達量のうち計画誤差でインバランスになる割合")
+            imb_premium    = pc4.number_input("インバランスプレミアム (円/kWh)", min_value=0.0, value=3.0, step=0.5,
+                                               help="インバランス精算の追加コスト")
+
+        def _run_pnl(demand_df: pd.DataFrame):
+            _ts = pd.DatetimeIndex(demand_df["datetime"].sort_values().unique())
+            _supply_parts = list(_pnl_supply_parts)
+            if sources_for_pnl:
+                _supply_parts.append(supply_planner.combine_supply_profiles(sources_for_pnl, _ts))
+            _supply = (
+                pd.concat(_supply_parts, ignore_index=True)
+                if _supply_parts
+                else pd.DataFrame(columns=["datetime", "source_name", "supply_kwh"])
+            )
+            _balance = financial_model.calc_balance(demand_df, _supply)
+            _pnl = financial_model.calc_pnl(
+                _balance, _supply, source_costs,
+                jepx_price_by_month_hour=jepx_by_month_hour,
+                jepx_actual_series=jepx_actual_series,
+                surplus_sell_price_yen=surplus_price,
+                inbalance_factor_pct=imb_factor,
+                inbalance_premium_yen=imb_premium,
+            )
+            _facility_revenue = tariff.calc_facility_revenue_monthly(
+                demand_df, facility_assignments, plan_high, plan_low,
+            )
+            _monthly = financial_model.monthly_pnl_summary(_pnl, facility_revenue_monthly=_facility_revenue)
+            return _pnl, _monthly
 
         if st.button("▶ 収支シミュレーション実行", type="primary"):
             with st.spinner("計算中..."):
-                _pnl_ts = pd.DatetimeIndex(pnl_demand_df["datetime"].sort_values().unique())
-                if sources_for_pnl:
-                    _pnl_supply_parts.append(
-                        supply_planner.combine_supply_profiles(sources_for_pnl, _pnl_ts)
-                    )
-                _pnl_supply = (
-                    pd.concat(_pnl_supply_parts, ignore_index=True)
-                    if _pnl_supply_parts
-                    else pd.DataFrame(columns=["datetime", "source_name", "supply_kwh"])
-                )
-                _pnl_balance = financial_model.calc_balance(pnl_demand_df, _pnl_supply)
-                _pnl_df      = financial_model.calc_pnl(
-                    _pnl_balance, _pnl_supply, source_costs,
-                    retail_price_yen     = retail_price,
-                    jepx_price_by_hour   = jepx_by_hour,
-                    surplus_sell_price_yen = surplus_price,
-                    inbalance_factor_pct = imb_factor,
-                    inbalance_premium_yen = imb_premium,
-                )
+                _pnl_df, _monthly_df = _run_pnl(pnl_demand_df)
                 st.session_state["pnl_result"]  = _pnl_df
-                st.session_state["pnl_monthly"] = financial_model.monthly_pnl_summary(_pnl_df)
+                st.session_state["pnl_monthly"] = _monthly_df
 
         pnl_result  = st.session_state.get("pnl_result")
         pnl_monthly = st.session_state.get("pnl_monthly")
@@ -1040,21 +1168,25 @@ with tab_pnl:
             st.info("価格を設定して「収支シミュレーション実行」を押してください。")
         else:
             # KPI
-            total_revenue = float(pnl_result["retail_revenue"].sum() + pnl_result["surplus_revenue"].sum())
-            total_cost    = float(pnl_result["gen_cost"].sum() + pnl_result["procurement_cost"].sum() + pnl_result["inbalance_cost"].sum())
-            total_profit  = float(pnl_result["profit"].sum())
+            total_revenue = float(pnl_monthly["revenue"].sum()) if pnl_monthly is not None else 0.0
+            total_cost    = float(pnl_monthly["cost_of_sales"].sum()) if pnl_monthly is not None else 0.0
+            total_profit  = float(pnl_monthly["gross_profit"].sum()) if pnl_monthly is not None else 0.0
             months        = pnl_monthly["month"].nunique() if pnl_monthly is not None else 1
 
             st.markdown("---")
             r1, r2, r3, r4 = st.columns(4)
-            r1.metric("総収入（期間）",    f"{total_revenue/10000:.0f} 万円")
-            r2.metric("総コスト（期間）",   f"{total_cost/10000:.0f} 万円")
-            r3.metric("事業利益（期間）",   f"{total_profit/10000:.0f} 万円",
+            r1.metric("売上高（期間）",    f"{total_revenue/10000:.0f} 万円")
+            r2.metric("売上原価（期間）",   f"{total_cost/10000:.0f} 万円")
+            r3.metric("売上総利益（期間）", f"{total_profit/10000:.0f} 万円",
                        delta=f"月平均 {total_profit/10000/max(months,1):.0f} 万円")
-            r4.metric("収支率",
+            r4.metric("売上総利益率",
                        f"{total_profit/total_revenue*100:.1f} %" if total_revenue > 0 else "—")
 
             if pnl_monthly is not None:
+                st.caption(
+                    "単位: 千円。売上高は小売販売収入（再エネ賦課金を除く）。"
+                    "売上総利益（粗利益）＝売上高－売上原価。"
+                )
                 st.plotly_chart(
                     visualizer.monthly_pnl_chart(pnl_monthly),
                     use_container_width=True,
@@ -1064,13 +1196,82 @@ with tab_pnl:
                     tbl = pnl_monthly.copy()
                     tbl["month"] = tbl["month"].dt.strftime("%Y-%m")
                     tbl = tbl.rename(columns={
-                        "month": "月", "retail_revenue": "小売収入(円)",
-                        "surplus_revenue": "余剰売電(円)", "gen_cost": "発電コスト(円)",
+                        "month": "月", "revenue": "売上高(円)", "renewable_levy": "再エネ賦課金(円)",
+                        "cost_of_sales": "売上原価(円)", "gross_profit": "売上総利益(円)",
+                        "surplus_revenue": "余剰売電(円)", "gen_cost": "発電・調達コスト(円)",
                         "procurement_cost": "JEPX調達(円)", "inbalance_cost": "インバランス(円)",
-                        "profit": "利益(円)", "demand_kwh": "需要(kWh)",
+                        "demand_kwh": "需要(kWh)",
                         "deficit_kwh": "不足(kWh)", "surplus_kwh": "余剰(kWh)",
                     })
+                    tbl = tbl.drop(columns=["profit"], errors="ignore")
                     st.dataframe(tbl.set_index("月"), use_container_width=True)
+
+        # ── ⑤ シナリオ管理 ─────────────────────────────────────────────────
+        st.markdown("---")
+        with st.container(border=True):
+            st.markdown("**⑤ シナリオ管理**")
+            st.caption("料金設計・JEPX単価・電源構成などの前提一式を名前を付けて保存し、複数シナリオを比較できます。")
+
+            sc1, sc2 = st.columns([3, 1])
+            scenario_name = sc1.text_input("シナリオ名", key="scenario_name_input", placeholder="例: 標準シナリオ")
+            if sc2.button("💾 保存", key="save_scenario_btn"):
+                if not scenario_name:
+                    st.error("シナリオ名を入力してください。")
+                else:
+                    _scenario = scenario_manager.Scenario(
+                        name=scenario_name,
+                        facility_assignments={
+                            k: {
+                                "facility_name": v.facility_name,
+                                "voltage_class": v.voltage_class,
+                                "contract_kw": v.contract_kw,
+                                "contract_amp": v.contract_amp,
+                            } for k, v in facility_assignments.items()
+                        },
+                        tariff_high=asdict(plan_high),
+                        tariff_low=asdict(plan_low),
+                        jepx_by_month_hour={f"{m}-{h}": p for (m, h), p in jepx_by_month_hour.items()},
+                        source_costs=source_costs,
+                        supply_sources=st.session_state.get("supply_sources", []),
+                        surplus_price=surplus_price,
+                        imb_factor=imb_factor,
+                        imb_premium=imb_premium,
+                    )
+                    scenario_manager.save_scenario(_scenario)
+                    st.success(f"シナリオ「{scenario_name}」を保存しました。")
+                    st.rerun()
+
+            saved_scenarios = scenario_manager.load_scenarios()
+            if saved_scenarios:
+                st.caption(f"保存済みシナリオ: {', '.join(s.name for s in saved_scenarios)}")
+                del_col1, del_col2 = st.columns([3, 1])
+                del_target = del_col1.selectbox(
+                    "削除するシナリオ", [s.name for s in saved_scenarios], key="scenario_del_select",
+                )
+                if del_col2.button("🗑 削除", key="delete_scenario_btn"):
+                    scenario_manager.delete_scenario(del_target)
+                    st.rerun()
+
+                if st.button("▶ 全シナリオを一括計算して比較", key="compare_scenarios_btn"):
+                    with st.spinner("全シナリオを計算中..."):
+                        _summaries = {}
+                        for _sc in saved_scenarios:
+                            _sc_monthly = scenario_manager.run_scenario(_sc, pnl_demand_df)
+                            _summaries[_sc.name] = scenario_manager.annual_summary(_sc_monthly)
+                        st.session_state["scenario_summaries"] = _summaries
+
+                _summaries = st.session_state.get("scenario_summaries")
+                if _summaries:
+                    st.plotly_chart(
+                        visualizer.scenario_comparison_chart(_summaries),
+                        use_container_width=True,
+                    )
+                    _cmp_tbl = pd.DataFrame(_summaries).T.rename(columns={
+                        "revenue": "売上高(円)", "cost_of_sales": "売上原価(円)", "gross_profit": "売上総利益(円)",
+                    })
+                    st.dataframe(_cmp_tbl, use_container_width=True)
+            else:
+                st.caption("保存済みシナリオはありません。")
 
 
 with tab_supply:

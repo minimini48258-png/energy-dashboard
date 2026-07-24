@@ -20,6 +20,13 @@ SUPPLY_COLORS = {
     "その他": "#EC7063",
 }
 
+# 収支FS（売上高/売上原価/粗利益）用の固定配色。
+# dataviz スキルの validate_palette.js で colorblind-safe（all-pairs）を確認済み。
+FS_REVENUE_COLOR = "#2a78d6"   # 売上高（紺）
+FS_COST_COLOR    = "#e34948"   # 売上原価（赤）
+FS_PROFIT_COLOR  = "#008300"   # 売上総利益・粗利益（緑）
+_FS_TITLE_COLOR  = "#1F3864"
+
 
 # ---------------------------------------------------------------------------
 # 需要カーブ（30 分値折れ線）
@@ -595,53 +602,87 @@ def supply_demand_balance_chart(
 # 月別P&Lチャート
 # ---------------------------------------------------------------------------
 
+def _month_labels(months: pd.Series) -> list[str]:
+    """月ラベルを生成する。複数年にまたがる場合のみ年を併記して曖昧さを避ける。"""
+    multi_year = months.dt.year.nunique() > 1
+    if multi_year:
+        return [f"{d.year}年{d.month}月" for d in months]
+    return [f"{d.month}月" for d in months]
+
+
 def monthly_pnl_chart(
     monthly_df: pd.DataFrame,
-    title: str = "月別 収支シミュレーション（万円）",
+    title: str = "月別収支",
 ) -> go.Figure:
-    """収入（正）・コスト（負）の積み上げバー＋利益折れ線。"""
+    """
+    月別収支を 売上高／売上原価／売上総利益（粗利益） の3系列クラスタ棒グラフで表示する。
+    売上高は小売販売収入（再エネ賦課金を除く）。売上総利益（粗利益）＝売上高－売上原価。
+    """
     df = monthly_df.copy()
-    df["month_str"] = df["month"].dt.strftime("%Y-%m")
-    scale = 10_000  # 円 → 万円
+    df["month_str"] = _month_labels(df["month"])
+    scale = 1_000  # 円 → 千円
 
     fig = go.Figure()
 
     fig.add_trace(go.Bar(
-        x=df["month_str"], y=df["retail_revenue"] / scale,
-        name="小売収入", marker_color="#2E86AB", opacity=0.9,
+        x=df["month_str"], y=df["revenue"] / scale,
+        name="売上高", marker_color=FS_REVENUE_COLOR,
+        text=[f"{v:,.0f}" for v in df["revenue"] / scale], textposition="outside",
     ))
     fig.add_trace(go.Bar(
-        x=df["month_str"], y=df.get("surplus_revenue", 0) / scale,
-        name="余剰売電", marker_color="#A8DADC", opacity=0.9,
+        x=df["month_str"], y=df["cost_of_sales"] / scale,
+        name="売上原価", marker_color=FS_COST_COLOR,
+        text=[f"{v:,.0f}" for v in df["cost_of_sales"] / scale], textposition="outside",
     ))
     fig.add_trace(go.Bar(
-        x=df["month_str"], y=-df["gen_cost"] / scale,
-        name="発電コスト", marker_color="#F4A261", opacity=0.85,
-    ))
-    fig.add_trace(go.Bar(
-        x=df["month_str"], y=-df["procurement_cost"] / scale,
-        name="JEPX調達コスト", marker_color="#E76F51", opacity=0.85,
-    ))
-    fig.add_trace(go.Bar(
-        x=df["month_str"], y=-df["inbalance_cost"] / scale,
-        name="インバランスコスト", marker_color="#C73E1D", opacity=0.85,
-    ))
-    fig.add_trace(go.Scatter(
-        x=df["month_str"], y=df["profit"] / scale,
-        name="事業利益",
-        line=dict(color="#1A1A1A", width=3),
-        mode="lines+markers",
-        marker=dict(size=6),
+        x=df["month_str"], y=df["gross_profit"] / scale,
+        name="売上総利益（粗利益）", marker_color=FS_PROFIT_COLOR,
+        text=[f"{v:,.0f}" for v in df["gross_profit"] / scale], textposition="outside",
     ))
 
     fig.update_layout(
-        barmode="relative",
-        title=title,
-        xaxis_title="月",
-        yaxis_title="万円",
+        barmode="group",
+        template="plotly_white",
+        title=dict(text=title, font=dict(size=22, color=_FS_TITLE_COLOR)),
+        xaxis=dict(tickangle=-30),
+        yaxis=dict(title="千円"),
         hovermode="x unified",
-        margin=dict(l=20, r=20, t=50, b=20),
-        legend=dict(orientation="h", yanchor="bottom", y=1.02, xanchor="right", x=1),
+        margin=dict(l=20, r=20, t=60, b=40),
+        legend=dict(title=dict(text="区分"), orientation="v", yanchor="top", y=1, xanchor="left", x=1.02),
+    )
+    return fig
+
+
+def scenario_comparison_chart(
+    summaries: dict[str, dict],
+    title: str = "シナリオ比較（年間累計）",
+) -> go.Figure:
+    """シナリオ名を横軸に、売上高／売上原価／売上総利益（粗利益）を比較する。"""
+    names = list(summaries.keys())
+    scale = 10_000  # 円 → 万円
+
+    fig = go.Figure()
+    fig.add_trace(go.Bar(
+        x=names, y=[summaries[n].get("revenue", 0) / scale for n in names],
+        name="売上高", marker_color=FS_REVENUE_COLOR,
+    ))
+    fig.add_trace(go.Bar(
+        x=names, y=[summaries[n].get("cost_of_sales", 0) / scale for n in names],
+        name="売上原価", marker_color=FS_COST_COLOR,
+    ))
+    fig.add_trace(go.Bar(
+        x=names, y=[summaries[n].get("gross_profit", 0) / scale for n in names],
+        name="売上総利益（粗利益）", marker_color=FS_PROFIT_COLOR,
+    ))
+
+    fig.update_layout(
+        barmode="group",
+        template="plotly_white",
+        title=dict(text=title, font=dict(size=20, color=_FS_TITLE_COLOR)),
+        yaxis=dict(title="万円"),
+        hovermode="x unified",
+        margin=dict(l=20, r=20, t=60, b=40),
+        legend=dict(title=dict(text="区分"), orientation="v", yanchor="top", y=1, xanchor="left", x=1.02),
     )
     return fig
 
