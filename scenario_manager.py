@@ -1,6 +1,6 @@
 """
 scenario_manager.py
-収支シミュレーションの前提条件（料金設計・JEPX単価・電源構成等）を
+小売FS（retail_fs.py）の前提条件一式（fs_design）を
 名前付きシナリオとして保存・読込・比較実行する。
 """
 
@@ -14,8 +14,8 @@ from pathlib import Path
 import pandas as pd
 
 import financial_model
+import retail_fs
 import supply_planner
-import tariff
 
 SCENARIOS_FILE = Path("/tmp/energy_dashboard/scenarios.json")
 
@@ -23,21 +23,13 @@ SCENARIOS_FILE = Path("/tmp/energy_dashboard/scenarios.json")
 @dataclass
 class Scenario:
     name: str
-    facility_assignments: dict = field(default_factory=dict)   # {facility_name: asdict(FacilityTariffAssignment)}
-    tariff_high: dict = field(default_factory=dict)             # asdict(TariffPlan)
-    tariff_low: dict = field(default_factory=dict)              # asdict(TariffPlan)
-    jepx_by_month_hour: dict = field(default_factory=dict)      # {"month-hour": price} (JSON key must be str)
-    source_costs: dict = field(default_factory=dict)            # {source_name: cost_per_kwh}
-    supply_sources: list = field(default_factory=list)          # list[asdict(SupplySource)]
-    surplus_price: float = 7.0
-    imb_factor: float = 10.0
-    imb_premium: float = 3.0
+    fs_design: dict = field(default_factory=dict)      # pages/fs_scenario_design.py が組み立てる設計一式
+    supply_sources: list = field(default_factory=list)  # list[asdict(SupplySource)]
     created_at: str = field(default_factory=lambda: datetime.now().isoformat(timespec="seconds"))
 
 
 def save_scenario(scenario: Scenario) -> None:
-    scenarios = load_scenarios()
-    scenarios = [s for s in scenarios if s.name != scenario.name]
+    scenarios = [s for s in load_scenarios() if s.name != scenario.name]
     scenarios.append(scenario)
     SCENARIOS_FILE.parent.mkdir(parents=True, exist_ok=True)
     SCENARIOS_FILE.write_text(
@@ -64,43 +56,47 @@ def delete_scenario(name: str) -> None:
     )
 
 
-def run_scenario(scenario: Scenario, demand_df: pd.DataFrame) -> pd.DataFrame:
-    """シナリオの前提条件でP&Lを計算し、月次サマリー（visualizer.monthly_pnl_chart互換）を返す。"""
-    assignments = {
-        name: tariff.FacilityTariffAssignment(**a)
-        for name, a in scenario.facility_assignments.items()
-    }
-    plan_high = tariff.TariffPlan(**scenario.tariff_high) if scenario.tariff_high else tariff.CHUBU_HIGH_VOLTAGE_DEFAULT()
-    plan_low = tariff.TariffPlan(**scenario.tariff_low) if scenario.tariff_low else tariff.CHUBU_LOW_VOLTAGE_DEFAULT()
+def run_scenario(scenario: Scenario, demand_df: pd.DataFrame) -> dict:
+    """シナリオの前提条件で retail_fs.run_fs を実行し、その戻り値（{"monthly","annual"}）を返す。"""
+    design = scenario.fs_design
+
+    tariff_plans = [retail_fs.TariffPlan(**p) for p in design.get("tariff_plans", [])] or retail_fs.default_tariff_plans()
+    facility_configs = [retail_fs.FacilityConfig(**c) for c in design.get("facility_configs", [])]
+    transmission_rates = {
+        vc: retail_fs.TransmissionRate(**r) for vc, r in design.get("transmission_rates", {}).items()
+    } or retail_fs.default_transmission_rates()
+
+    jepx_by_month_hour = {
+        tuple(int(x) for x in k.split("-")): v
+        for k, v in design.get("jepx_by_month_hour", {}).items()
+    } or financial_model.DEFAULT_JEPX_PRICE_BY_MONTH_HOUR
 
     sources = [supply_planner.SupplySource(**s) for s in scenario.supply_sources]
     ts = pd.DatetimeIndex(demand_df["datetime"].sort_values().unique())
     supply_df = supply_planner.combine_supply_profiles(sources, ts)
-
     balance_df = financial_model.calc_balance(demand_df, supply_df)
 
-    jepx_by_month_hour = {
-        tuple(int(x) for x in k.split("-")): v
-        for k, v in scenario.jepx_by_month_hour.items()
-    } if scenario.jepx_by_month_hour else None
-
-    pnl_df = financial_model.calc_pnl(
-        balance_df, supply_df, scenario.source_costs,
+    return retail_fs.run_fs(
+        demand_df=demand_df,
+        balance_df=balance_df,
+        supply_df=supply_df,
+        facility_configs=facility_configs,
+        tariff_plans=tariff_plans,
+        transmission_rates=transmission_rates,
+        source_costs=design.get("source_costs", {}),
         jepx_price_by_month_hour=jepx_by_month_hour,
-        surplus_sell_price_yen=scenario.surplus_price,
-        inbalance_factor_pct=scenario.imb_factor,
-        inbalance_premium_yen=scenario.imb_premium,
+        fuel_adjustment_yen_per_kwh=design.get("fuel_adjustment_yen_per_kwh", 0.0),
+        renewable_levy_yen_per_kwh=design.get("renewable_levy_yen_per_kwh", 4.18),
+        capacity_unit_yen_per_kw_year=design.get("capacity_unit_yen_per_kw_year", 0.0),
+        reserve_margin_pct=design.get("reserve_margin_pct", 3.0),
     )
-    facility_revenue = tariff.calc_facility_revenue_monthly(demand_df, assignments, plan_high, plan_low)
-    return financial_model.monthly_pnl_summary(pnl_df, facility_revenue_monthly=facility_revenue)
 
 
-def annual_summary(monthly_df: pd.DataFrame) -> dict:
-    """月次サマリーから年間累計の 売上高／売上原価／粗利益 を返す。"""
-    if monthly_df is None or monthly_df.empty:
-        return {"revenue": 0.0, "cost_of_sales": 0.0, "gross_profit": 0.0}
+def annual_summary(fs_result: dict) -> dict:
+    """run_fs()/run_scenario() の結果から 売上高／売上原価／粗利益 の年間累計を返す。"""
+    annual = fs_result.get("annual", {}) if fs_result else {}
     return {
-        "revenue": float(monthly_df["revenue"].sum()),
-        "cost_of_sales": float(monthly_df["cost_of_sales"].sum()),
-        "gross_profit": float(monthly_df["gross_profit"].sum()),
+        "revenue": float(annual.get("sales_revenue", 0.0)),
+        "cost_of_sales": float(annual.get("cost_of_sales", 0.0)),
+        "gross_profit": float(annual.get("gross_profit", 0.0)),
     }

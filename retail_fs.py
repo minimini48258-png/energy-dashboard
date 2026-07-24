@@ -14,6 +14,15 @@ retail_fs.py
 計算式は「電力小売FS 収支試算ツール 使い方ガイド」12章（計算のしくみ）に準拠：
     売上総利益（粗利益） = 売上高 - 再エネ賦課金（納付） - (電力調達費 + 託送料金 + 容量拠出金)
     売上高 = 基本料金 + 従量料金 + 燃料費調整額 + 再エネ賦課金 + 市場売却収入
+
+料金プランの季節別・累進段階別モードのデフォルト値は、中部電力ミライズの公開料金
+（2026年7月 Web調査、※要確認。実際の契約単価は同社公式サイトの最新料金表で確認のこと）:
+  - 高圧業務用電力(FRプラン相当): 基本料金 約1,716.26〜2,002.26円/kW、
+    電力量料金 夏季(7-9月) 約18.97〜20.30円/kWh、その他季 約18.00〜19.21円/kWh
+  - 従量電灯B: 電力量料金 第1段階(〜120kWh)21.20円、第2段階(120〜300kWh)25.67円、
+    第3段階(300kWh超)28.62円/kWh
+  - 再エネ発電促進賦課金: 経済産業省公表 2026年5月〜2027年4月 4.18円/kWh
+を参考値として採用している。
 """
 
 from __future__ import annotations
@@ -21,6 +30,7 @@ from __future__ import annotations
 import json
 from dataclasses import asdict, dataclass, field
 from pathlib import Path
+from typing import Optional
 
 import pandas as pd
 
@@ -32,6 +42,9 @@ VOLTAGE_CLASSES: list[str] = ["低圧", "高圧", "特別高圧"]
 # 時間帯別プランで使う昼夜2区分（時）
 DAY_HOURS   = list(range(8, 22))   # 8-22時
 NIGHT_HOURS = [h for h in range(24) if h not in DAY_HOURS]
+
+# 季節別プランで使う夏季区分（中部電力の標準的な区分：7〜9月）
+SUMMER_MONTHS = {7, 8, 9}
 
 # JEPX残差（市場調達分）の排出係数の目安値（kg-CO2/kWh）。ガイド記載の取引所係数を参照。
 JEPX_EMISSION_FACTOR = 0.472
@@ -55,10 +68,15 @@ class TariffPlan:
     name: str
     voltage_class: str = "高圧"
     basic_yen_per_kw: float = 1_000.0        # 基本料金単価（円/kW・月）
-    volumetric_mode: str = "flat"             # "flat"（一律） | "tou"（時間帯別・昼夜2区分）
+    volumetric_mode: str = "flat"             # "flat"一律 | "tou"昼夜2区分 | "seasonal"季節別2区分 | "tiered"累進段階制
     flat_rate: float = 25.0                   # 一律単価（円/kWh）
     day_rate: float = 27.0                    # 時間帯別：昼間（8-22時）単価（円/kWh）
     night_rate: float = 18.0                  # 時間帯別：夜間（22-8時）単価（円/kWh）
+    summer_rate: float = 19.6                 # 季節別：夏季（7-9月）単価（円/kWh）※要確認
+    other_rate: float = 18.6                  # 季節別：その他季単価（円/kWh）※要確認
+    tiered_rates: list[tuple[Optional[float], float]] = field(
+        default_factory=lambda: [(120.0, 21.20), (300.0, 25.67), (None, 28.62)]
+    )  # 累進段階制：(上限kWh, 単価円/kWh) を段階順に。最終段は上限None ※要確認
     power_factor_discount: bool = True        # 高圧・特別高圧の力率割引/割増（基準85%・1pt=1%）を適用するか
 
 
@@ -81,13 +99,19 @@ class TransmissionRate:
 
 
 def default_tariff_plans() -> list[TariffPlan]:
-    """電圧区分ごとのサンプル料金プラン（一般的な水準の目安値。実際の単価は要確認）。"""
+    """
+    電圧区分ごとのサンプル料金プラン。
+    低圧・高圧は中部電力ミライズの公開料金（従量電灯B・高圧業務用電力）を参考にした
+    目安値、特別高圧は一般的な水準の目安値（いずれも※要確認）。
+    """
     return [
-        TariffPlan(name="標準プラン（低圧）",   voltage_class="低圧",
-                   basic_yen_per_kw=0.0, volumetric_mode="flat", flat_rate=28.0,
+        TariffPlan(name="標準プラン（低圧・従量電灯B型）", voltage_class="低圧",
+                   basic_yen_per_kw=0.0, volumetric_mode="tiered",
+                   tiered_rates=[(120.0, 21.20), (300.0, 25.67), (None, 28.62)],
                    power_factor_discount=False),
-        TariffPlan(name="標準プラン（高圧）",   voltage_class="高圧",
-                   basic_yen_per_kw=1_650.0, volumetric_mode="tou", day_rate=17.5, night_rate=12.5),
+        TariffPlan(name="標準プラン（高圧・季節別）", voltage_class="高圧",
+                   basic_yen_per_kw=1_860.0, volumetric_mode="seasonal",
+                   summer_rate=19.6, other_rate=18.6),
         TariffPlan(name="標準プラン（特別高圧）", voltage_class="特別高圧",
                    basic_yen_per_kw=1_600.0, volumetric_mode="tou", day_rate=16.0, night_rate=11.5),
     ]
@@ -169,7 +193,27 @@ def _rate_series(dt: pd.Series, plan: TariffPlan) -> pd.Series:
     if plan.volumetric_mode == "tou":
         hours = dt.dt.hour
         return hours.map(lambda h: plan.day_rate if h in DAY_HOURS else plan.night_rate).astype(float)
+    if plan.volumetric_mode == "seasonal":
+        months = dt.dt.month
+        return months.map(lambda m: plan.summer_rate if m in SUMMER_MONTHS else plan.other_rate).astype(float)
     return pd.Series(plan.flat_rate, index=dt.index, dtype=float)
+
+
+def _tiered_energy_charge(total_kwh: float, tiered_rates: list[tuple[Optional[float], float]]) -> float:
+    """月間累積kWhに対する累進段階制の電力量料金（円）を計算する。"""
+    remaining = total_kwh
+    lower = 0.0
+    charge = 0.0
+    for upper, price in tiered_rates:
+        if remaining <= 0:
+            break
+        band = (upper - lower) if upper is not None else remaining
+        used = min(remaining, band)
+        charge += used * price
+        remaining -= used
+        if upper is not None:
+            lower = upper
+    return charge
 
 
 def calc_facility_revenue(
@@ -199,10 +243,15 @@ def calc_facility_revenue(
 
         work = fac_df.copy()
         work["month"] = work["datetime"].dt.to_period("M").dt.to_timestamp()
-        work["rate"] = _rate_series(work["datetime"], plan)
-        work["volumetric_revenue"] = work["consumption_kwh"] * work["rate"]
         work["fuel_adj_revenue"] = work["consumption_kwh"] * fuel_adjustment_yen_per_kwh
         work["levy_revenue"] = work["consumption_kwh"] * renewable_levy_yen_per_kwh
+
+        if plan.volumetric_mode == "tiered":
+            # 累進段階制：月間累積kWhに対して段階単価を適用するため、月次kWh確定後に計算する
+            work["volumetric_revenue"] = 0.0
+        else:
+            work["rate"] = _rate_series(work["datetime"], plan)
+            work["volumetric_revenue"] = work["consumption_kwh"] * work["rate"]
 
         pf_mult = (
             power_factor_multiplier(cfg.power_factor_pct)
@@ -220,6 +269,10 @@ def calc_facility_revenue(
                 levy_revenue=("levy_revenue", "sum"),
             )
         )
+        if plan.volumetric_mode == "tiered":
+            monthly["volumetric_revenue"] = monthly["kwh"].apply(
+                lambda kwh: _tiered_energy_charge(kwh, plan.tiered_rates)
+            )
         monthly["facility_name"] = facility_name
         monthly["basic_revenue"] = basic_per_month
         monthly["total_revenue"] = (
@@ -298,16 +351,26 @@ def calc_procurement_cost(
     balance_df: pd.DataFrame,
     supply_df: pd.DataFrame,
     source_costs: dict[str, float],
-    jepx_price_by_hour: dict[int, float],
+    jepx_price_by_month_hour: dict[tuple[int, int], float],
     reserve_margin_pct: float,
+    jepx_actual_series: pd.Series | None = None,
 ) -> pd.DataFrame:
     """
     30分コマ単位の電力調達費を計算する（月次に集約して返す）。
     電力調達費 = (自社電源コスト + JEPX残差調達費) × (1 + 予備費率)
+
+    jepx_actual_series : 実績JEPX価格（datetime→円/kWh）。値がある30分コマは
+                          こちらを優先し、欠損コマは jepx_price_by_month_hour を使う
     """
     df = balance_df.copy()
+    df["_cal_month"] = df["datetime"].dt.month
     df["hour"] = df["datetime"].dt.hour
-    df["jepx_price"] = df["hour"].map(jepx_price_by_hour)
+    df["jepx_price"] = [
+        jepx_price_by_month_hour.get((m, h), 15.0) for m, h in zip(df["_cal_month"], df["hour"])
+    ]
+    if jepx_actual_series is not None and not jepx_actual_series.empty:
+        actual_vals = df["datetime"].map(jepx_actual_series)
+        df["jepx_price"] = actual_vals.combine_first(df["jepx_price"])
     df["jepx_cost"] = df["deficit_kwh"] * df["jepx_price"]
 
     if not supply_df.empty and source_costs:
@@ -345,11 +408,12 @@ def run_fs(
     tariff_plans: list[TariffPlan],
     transmission_rates: dict[str, TransmissionRate],
     source_costs: dict[str, float],
-    jepx_price_by_hour: dict[int, float],
+    jepx_price_by_month_hour: dict[tuple[int, int], float],
     fuel_adjustment_yen_per_kwh: float,
     renewable_levy_yen_per_kwh: float,
     capacity_unit_yen_per_kw_year: float,
     reserve_margin_pct: float,
+    jepx_actual_series: pd.Series | None = None,
 ) -> dict:
     """
     小売FSの一括試算。月別・年間サマリーの損益計算書ふうの結果を返す。
@@ -362,7 +426,8 @@ def run_fs(
     )
     transmission_df = calc_transmission_cost(demand_df, facility_configs, transmission_rates)
     procurement_df = calc_procurement_cost(
-        balance_df, supply_df, source_costs, jepx_price_by_hour, reserve_margin_pct,
+        balance_df, supply_df, source_costs, jepx_price_by_month_hour, reserve_margin_pct,
+        jepx_actual_series=jepx_actual_series,
     )
 
     n_months = max(procurement_df["month"].nunique(), 1) if not procurement_df.empty else 1
@@ -424,7 +489,7 @@ def sensitivity_jepx_shift(
     balance_df: pd.DataFrame,
     supply_df: pd.DataFrame,
     source_costs: dict[str, float],
-    jepx_price_by_hour: dict[int, float],
+    jepx_price_by_month_hour: dict[tuple[int, int], float],
     reserve_margin_pct: float,
     base_gross_profit: float,
     other_revenue: float,
@@ -439,7 +504,7 @@ def sensitivity_jepx_shift(
     shifts = shifts if shifts is not None else [-5, -3, -1, 0, 1, 3, 5]
     rows = []
     for shift in shifts:
-        shifted_prices = {h: max(p + shift, 0.0) for h, p in jepx_price_by_hour.items()}
+        shifted_prices = {k: max(p + shift, 0.0) for k, p in jepx_price_by_month_hour.items()}
         proc = calc_procurement_cost(balance_df, supply_df, source_costs, shifted_prices, reserve_margin_pct)
         procurement_cost = float(proc["procurement_cost"].sum())
         market_sale = float(proc["market_sale_revenue"].sum())
