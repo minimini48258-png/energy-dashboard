@@ -1687,49 +1687,66 @@ with tab_retail_fs:
     if fs_result is None:
         st.info("設定を確認して「小売FS試算実行」を押してください。")
     else:
-        _annual = fs_result["annual"]
-        _monthly = fs_result["monthly"]
-        _co2 = st.session_state.get("retail_fs_co2") or {}
+        try:
+            _annual = fs_result["annual"]
+            _monthly = fs_result["monthly"].copy()
+            # 古いセッション状態や想定外の型が残っていても描画できるよう防御的に整形する
+            _monthly["month"] = pd.to_datetime(_monthly["month"])
+            for _col in _monthly.columns:
+                if _col != "month":
+                    _monthly[_col] = pd.to_numeric(_monthly[_col], errors="coerce").fillna(0.0)
+            _co2 = st.session_state.get("retail_fs_co2") or {}
 
-        st.markdown("---")
-        st.markdown("**損益計算書ふうサマリー（期間合計）**")
-        _pl_rows = [
-            ("売上高", _annual["sales_revenue"], 100.0),
-            ("　基本料金", _annual["basic_revenue"], None),
-            ("　従量料金", _annual["volumetric_revenue"], None),
-            ("　燃料費調整額", _annual["fuel_adj_revenue"], None),
-            ("　再エネ賦課金（預り金）", _annual["levy_revenue"], None),
-            ("　市場売却収入", _annual["market_sale_revenue"], None),
-            ("売上原価", _annual["cost_of_sales"] + _annual["levy_revenue"], None),
-            ("　電力調達費", _annual["procurement_cost"], None),
-            ("　託送料金", _annual["transmission_cost"], None),
-            ("　容量拠出金", _annual["capacity_contribution"], None),
-            ("　再エネ賦課金（納付）", _annual["levy_revenue"], None),
-            ("売上総利益（粗利益）", _annual["gross_profit"], _annual["gross_margin_pct"]),
-        ]
-        _pl_df = pd.DataFrame(_pl_rows, columns=["項目", "金額(円)", "対売上高(%)"])
-        _pl_df["金額(円)"] = _pl_df["金額(円)"].round(0).astype(int)
-        st.dataframe(_pl_df.set_index("項目"), use_container_width=True)
+            st.markdown("---")
+            st.markdown("**損益計算書ふうサマリー（期間合計）**")
+            _pl_rows = [
+                ("売上高", _annual["sales_revenue"], 100.0),
+                ("　基本料金", _annual["basic_revenue"], None),
+                ("　従量料金", _annual["volumetric_revenue"], None),
+                ("　燃料費調整額", _annual["fuel_adj_revenue"], None),
+                ("　再エネ賦課金（預り金）", _annual["levy_revenue"], None),
+                ("　市場売却収入", _annual["market_sale_revenue"], None),
+                ("売上原価", _annual["cost_of_sales"] + _annual["levy_revenue"], None),
+                ("　電力調達費", _annual["procurement_cost"], None),
+                ("　託送料金", _annual["transmission_cost"], None),
+                ("　容量拠出金", _annual["capacity_contribution"], None),
+                ("　再エネ賦課金（納付）", _annual["levy_revenue"], None),
+                ("売上総利益（粗利益）", _annual["gross_profit"], _annual["gross_margin_pct"]),
+            ]
+            _pl_df = pd.DataFrame(_pl_rows, columns=["項目", "金額(円)", "対売上高(%)"])
+            _pl_df["金額(円)"] = _pl_df["金額(円)"].round(0).astype(int)
+            st.dataframe(_pl_df.set_index("項目"), use_container_width=True)
 
-        r1, r2, r3, r4 = st.columns(4)
-        r1.metric("売上高", f"{_annual['sales_revenue']/10000:,.0f} 万円")
-        r2.metric("売上総利益（粗利益）", f"{_annual['gross_profit']/10000:,.0f} 万円")
-        r3.metric("粗利益率", f"{_annual['gross_margin_pct']:.1f} %")
-        r4.metric("契約電力合計", f"{_annual['contract_kw_total']:,.0f} kW")
+            r1, r2, r3, r4 = st.columns(4)
+            r1.metric("売上高", f"{_annual['sales_revenue']/10000:,.0f} 万円")
+            r2.metric("売上総利益（粗利益）", f"{_annual['gross_profit']/10000:,.0f} 万円")
+            r3.metric("粗利益率", f"{_annual['gross_margin_pct']:.1f} %")
+            r4.metric("契約電力合計", f"{_annual['contract_kw_total']:,.0f} kW")
 
-        if _co2:
-            c1, c2 = st.columns(2)
-            c1.metric("CO2排出量", f"{_co2['co2_total_t']:,.1f} t-CO2")
-            c2.metric("地産電源比率", f"{_co2['local_ratio_pct']:.1f} %")
+            if _co2:
+                c1, c2 = st.columns(2)
+                c1.metric("CO2排出量", f"{_co2['co2_total_t']:,.1f} t-CO2")
+                c2.metric("地産電源比率", f"{_co2['local_ratio_pct']:.1f} %")
 
-        if not _monthly.empty:
-            st.plotly_chart(visualizer.retail_fs_pl_chart(_monthly), use_container_width=True)
-            with st.expander("月別数値テーブル"):
-                _tbl = _monthly.copy()
-                _tbl["month"] = _tbl["month"].dt.strftime("%Y-%m")
-                st.dataframe(_tbl.set_index("month"), use_container_width=True)
+            if not _monthly.empty:
+                st.plotly_chart(visualizer.retail_fs_pl_chart(_monthly), use_container_width=True)
+                with st.expander("月別数値テーブル"):
+                    _tbl = _monthly.copy()
+                    _tbl["month"] = _tbl["month"].dt.strftime("%Y-%m")
+                    st.dataframe(_tbl.set_index("month"), use_container_width=True)
 
-        _sens_df = st.session_state.get("retail_fs_sensitivity")
-        if _sens_df is not None and not _sens_df.empty:
-            st.markdown("**感度分析：JEPX価格が変動した場合の売上総利益（粗利益）**")
-            st.plotly_chart(visualizer.retail_fs_sensitivity_chart(_sens_df), use_container_width=True)
+            _sens_df = st.session_state.get("retail_fs_sensitivity")
+            if _sens_df is not None and not _sens_df.empty:
+                st.markdown("**感度分析：JEPX価格が変動した場合の売上総利益（粗利益）**")
+                st.plotly_chart(visualizer.retail_fs_sensitivity_chart(_sens_df), use_container_width=True)
+        except Exception as e:
+            st.error(
+                "結果の表示中にエラーが発生しました。下記の詳細を共有いただければ原因を特定できます。"
+                "「🔄 試算結果をクリア」を押してから設定を見直し、再度試算してください。"
+            )
+            st.exception(e)
+            if st.button("🔄 試算結果をクリア", key="fs_clear_result"):
+                st.session_state["retail_fs_result"] = None
+                st.session_state["retail_fs_sensitivity"] = None
+                st.session_state["retail_fs_co2"] = None
+                st.rerun()
