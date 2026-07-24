@@ -329,6 +329,39 @@ with st.container(border=True):
         st.caption("電源が登録されていません（「データ読み込み」でアップロードするか「電源管理」で登録してください）。"
                    "登録がない場合は全量をJEPX市場から調達する前提で試算します。")
 
+# ── ⑦ 販管費・法人税 ─────────────────────────────────────────────────
+with st.container(border=True):
+    st.markdown("**⑦ 販管費・法人税**")
+    st.caption("販管費は年額（円）で入力してください。行の追加・削除も可能です（「＋」ボタンで新規費目を追加）。")
+
+    _sga_default = st.session_state.get("fs_sga_items")
+    if _sga_default is None:
+        _sga_default = retail_fs.default_sga_items()
+    _sga_df = pd.DataFrame(
+        [{"費目": k, "年額(円)": v} for k, v in _sga_default.items()]
+    )
+    _edited_sga_df = st.data_editor(
+        _sga_df,
+        column_config={
+            "費目": st.column_config.TextColumn("費目"),
+            "年額(円)": st.column_config.NumberColumn("年額(円)", min_value=0.0, step=10000.0),
+        },
+        hide_index=True, use_container_width=True, num_rows="dynamic", key="fs_sga_editor",
+    )
+    sga_items = {
+        str(row["費目"]): float(row["年額(円)"])
+        for row in _edited_sga_df.to_dict("records")
+        if row.get("費目")
+    }
+    st.session_state["fs_sga_items"] = sga_items
+
+    tax_rate = st.number_input(
+        "法人税等 実効税率(%)", min_value=0.0, max_value=60.0,
+        value=retail_fs.DEFAULT_CORPORATE_TAX_RATE_PCT, step=0.5, key="fs_tax_rate",
+        help="※要確認・簡易計算：営業利益が黒字の場合のみ課税（繰越欠損金等は考慮しません）。"
+             "資本金・所得区分・地方税率により実際の実効税率は変動するため、税理士等にご確認ください。",
+    )
+
 # ── シナリオ設計を組み立てて保存 ──────────────────────────────────────
 st.session_state["fs_design"] = {
     "tariff_plans": [asdict(p) for p in tariff_plans],
@@ -342,6 +375,8 @@ st.session_state["fs_design"] = {
     "source_costs": source_costs,
     "emission_factors": emission_factors,
     "local_flags": local_flags,
+    "sga_items": sga_items,
+    "corporate_tax_rate_pct": tax_rate,
 }
 
 st.markdown("---")

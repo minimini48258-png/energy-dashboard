@@ -344,6 +344,25 @@ def calc_capacity_contribution(
 
 
 # ---------------------------------------------------------------------------
+# 販管費・法人税
+# ---------------------------------------------------------------------------
+
+def default_sga_items() -> dict[str, float]:
+    """販管費の代表的な費目と初期値（年額・円）。実際の水準は事業計画に合わせて入力する。"""
+    return {
+        "人件費": 0.0,
+        "システム費": 0.0,
+        "委託費": 0.0,
+        "家賃": 0.0,
+    }
+
+
+# 法人税等の実効税率の目安（中小法人、標準的なケース）※要確認。
+# 実際の税率は資本金・所得区分・地方税率により変動するため、必ず税理士等に確認のこと。
+DEFAULT_CORPORATE_TAX_RATE_PCT = 30.0
+
+
+# ---------------------------------------------------------------------------
 # 電力調達費（自社電源＋JEPX残差、予備費率を上乗せ）
 # ---------------------------------------------------------------------------
 
@@ -414,11 +433,19 @@ def run_fs(
     capacity_unit_yen_per_kw_year: float,
     reserve_margin_pct: float,
     jepx_actual_series: pd.Series | None = None,
+    sga_items: dict[str, float] | None = None,
+    corporate_tax_rate_pct: float = DEFAULT_CORPORATE_TAX_RATE_PCT,
 ) -> dict:
     """
     小売FSの一括試算。月別・年間サマリーの損益計算書ふうの結果を返す。
 
     売上総利益（粗利益） = 売上高 - 再エネ賦課金（納付） - (電力調達費 + 託送料金 + 容量拠出金)
+    営業利益 = 売上総利益（粗利益） - 販管費
+    法人税等 = max(営業利益, 0) × 実効税率（簡易計算。赤字時は0円、繰越欠損金等は考慮しない）
+    当期純利益 = 営業利益 - 法人税等
+
+    sga_items            : 販管費の費目別年額（円）。例: {"人件費": ..., "システム費": ..., "委託費": ..., "家賃": ...}
+    corporate_tax_rate_pct: 法人税等の実効税率（%）※要確認・簡易計算
     """
     revenue_df = calc_facility_revenue(
         demand_df, facility_configs, tariff_plans,
@@ -460,6 +487,10 @@ def run_fs(
         (monthly["gross_profit"] / monthly["sales_revenue"] * 100).where(monthly["sales_revenue"] != 0, 0.0)
     )
 
+    sga_annual_total = sum((sga_items or {}).values())
+    monthly["sga_cost"] = sga_annual_total / 12.0
+    monthly["operating_profit"] = monthly["gross_profit"] - monthly["sga_cost"]
+
     annual = {
         "kwh": float(monthly["kwh"].sum()),
         "basic_revenue": float(monthly["basic_revenue"].sum()),
@@ -480,6 +511,18 @@ def run_fs(
     }
     annual["gross_margin_pct"] = (
         annual["gross_profit"] / annual["sales_revenue"] * 100 if annual["sales_revenue"] else 0.0
+    )
+
+    annual["sga_cost"] = float(monthly["sga_cost"].sum())
+    annual["sga_breakdown"] = dict(sga_items or {})
+    annual["operating_profit"] = annual["gross_profit"] - annual["sga_cost"]
+    annual["corporate_tax"] = max(annual["operating_profit"], 0.0) * (corporate_tax_rate_pct / 100.0)
+    annual["net_income"] = annual["operating_profit"] - annual["corporate_tax"]
+    annual["operating_margin_pct"] = (
+        annual["operating_profit"] / annual["sales_revenue"] * 100 if annual["sales_revenue"] else 0.0
+    )
+    annual["net_margin_pct"] = (
+        annual["net_income"] / annual["sales_revenue"] * 100 if annual["sales_revenue"] else 0.0
     )
 
     return {"monthly": monthly, "annual": annual}

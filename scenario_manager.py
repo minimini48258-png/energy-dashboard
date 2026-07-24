@@ -89,14 +89,17 @@ def run_scenario(scenario: Scenario, demand_df: pd.DataFrame) -> dict:
         renewable_levy_yen_per_kwh=design.get("renewable_levy_yen_per_kwh", 4.18),
         capacity_unit_yen_per_kw_year=design.get("capacity_unit_yen_per_kw_year", 0.0),
         reserve_margin_pct=design.get("reserve_margin_pct", 3.0),
+        sga_items=design.get("sga_items", {}),
+        corporate_tax_rate_pct=design.get("corporate_tax_rate_pct", retail_fs.DEFAULT_CORPORATE_TAX_RATE_PCT),
     )
 
 
 def annual_summary(fs_result: dict) -> dict:
-    """run_fs()/run_scenario() の結果から 売上高／売上原価／粗利益 の年間累計を返す。"""
+    """run_fs()/run_scenario() の結果から 売上高／売上原価／粗利益／当期純利益 の年間累計を返す。"""
     annual = fs_result.get("annual", {}) if fs_result else {}
     return {
         "revenue": float(annual.get("sales_revenue", 0.0)),
         "cost_of_sales": float(annual.get("cost_of_sales", 0.0)),
         "gross_profit": float(annual.get("gross_profit", 0.0)),
+        "net_income": float(annual.get("net_income", 0.0)),
     }

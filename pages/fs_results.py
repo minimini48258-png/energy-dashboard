@@ -44,7 +44,9 @@ if _uploaded is not None:
     _supply_parts.append(_filtered_upload)
 _sources = [supply_planner.SupplySource(**s) for s in st.session_state.get("supply_sources", [])]
 
-fs_period = st.selectbox("分析期間", ["全データ期間", "直近1年", "直近6か月", "直近3か月"], key="fs_period")
+fs_period = st.selectbox(
+    "分析期間", ["全データ期間", "直近1年", "直近6か月", "直近3か月"], index=1, key="fs_period",
+)
 fs_demand_df = common.filter_by_period_option(filtered_base, fs_period)
 
 if st.button("▶ 小売FS試算実行", type="primary", key="run_retail_fs"):
@@ -79,6 +81,8 @@ if st.button("▶ 小売FS試算実行", type="primary", key="run_retail_fs"):
                     capacity_unit_yen_per_kw_year=fs_design["capacity_unit_yen_per_kw_year"],
                     reserve_margin_pct=fs_design["reserve_margin_pct"],
                     jepx_actual_series=jepx_actual_series,
+                    sga_items=fs_design.get("sga_items", {}),
+                    corporate_tax_rate_pct=fs_design.get("corporate_tax_rate_pct", retail_fs.DEFAULT_CORPORATE_TAX_RATE_PCT),
                 )
                 st.session_state["retail_fs_result"] = result
 
@@ -128,6 +132,14 @@ else:
             ("　容量拠出金", _annual["capacity_contribution"], None),
             ("　再エネ賦課金（納付）", _annual["levy_revenue"], None),
             ("売上総利益（粗利益）", _annual["gross_profit"], _annual["gross_margin_pct"]),
+            ("販管費", _annual["sga_cost"], None),
+        ]
+        for _item, _amount in _annual.get("sga_breakdown", {}).items():
+            _pl_rows.append((f"　{_item}", _amount, None))
+        _pl_rows += [
+            ("営業利益", _annual["operating_profit"], _annual["operating_margin_pct"]),
+            ("法人税等", _annual["corporate_tax"], None),
+            ("当期純利益", _annual["net_income"], _annual["net_margin_pct"]),
         ]
         _pl_df = pd.DataFrame(_pl_rows, columns=["項目", "金額(円)", "対売上高(%)"])
         _pl_df["金額(円)"] = _pl_df["金額(円)"].round(0).astype(int)
@@ -136,13 +148,15 @@ else:
         r1, r2, r3, r4 = st.columns(4)
         r1.metric("売上高", f"{_annual['sales_revenue']/10000:,.0f} 万円")
         r2.metric("売上総利益（粗利益）", f"{_annual['gross_profit']/10000:,.0f} 万円")
-        r3.metric("粗利益率", f"{_annual['gross_margin_pct']:.1f} %")
-        r4.metric("契約電力合計", f"{_annual['contract_kw_total']:,.0f} kW")
+        r3.metric("営業利益", f"{_annual['operating_profit']/10000:,.0f} 万円")
+        r4.metric("当期純利益", f"{_annual['net_income']/10000:,.0f} 万円",
+                   delta=f"純利益率 {_annual['net_margin_pct']:.1f} %")
 
+        c1, c2, c3 = st.columns(3)
+        c1.metric("契約電力合計", f"{_annual['contract_kw_total']:,.0f} kW")
         if _co2:
-            c1, c2 = st.columns(2)
-            c1.metric("CO2排出量", f"{_co2['co2_total_t']:,.1f} t-CO2")
-            c2.metric("地産電源比率", f"{_co2['local_ratio_pct']:.1f} %")
+            c2.metric("CO2排出量", f"{_co2['co2_total_t']:,.1f} t-CO2")
+            c3.metric("地産電源比率", f"{_co2['local_ratio_pct']:.1f} %")
 
         if not _monthly.empty:
             st.caption(

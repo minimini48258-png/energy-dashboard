@@ -56,7 +56,9 @@ else:
         scenario_manager.delete_scenario(del_target)
         st.rerun()
 
-    period = st.selectbox("比較対象期間", ["全データ期間", "直近1年", "直近6か月", "直近3か月"], key="cmp_period")
+    period = st.selectbox(
+        "比較対象期間", ["全データ期間", "直近1年", "直近6か月", "直近3か月"], index=1, key="cmp_period",
+    )
     cmp_demand_df = common.filter_by_period_option(filtered_base, period)
 
     if st.button("▶ 全シナリオを一括計算して比較", key="compare_scenarios_btn"):
@@ -75,5 +77,6 @@ else:
         st.plotly_chart(visualizer.scenario_comparison_chart(summaries), use_container_width=True)
         cmp_tbl = pd.DataFrame(summaries).T.rename(columns={
             "revenue": "売上高(円)", "cost_of_sales": "売上原価(円)", "gross_profit": "売上総利益(円)",
+            "net_income": "当期純利益(円)",
         })
         st.dataframe(cmp_tbl, use_container_width=True)
