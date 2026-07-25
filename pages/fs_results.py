@@ -107,6 +107,7 @@ if st.button("▶ 小売FS試算実行", type="primary", key="run_retail_fs"):
                     jepx_actual_series=jepx_actual_series,
                     sga_items=fs_design.get("sga_items", {}),
                     corporate_tax_rate_pct=fs_design.get("corporate_tax_rate_pct", retail_fs.DEFAULT_CORPORATE_TAX_RATE_PCT),
+                    fip_indexed_sources=fs_design.get("fip_indexed_sources", {}),
                 )
                 st.session_state["retail_fs_result"] = result
                 st.session_state["fs_demand_df"] = fs_demand_df
@@ -121,6 +122,7 @@ if st.button("▶ 小売FS試算実行", type="primary", key="run_retail_fs"):
                     fs_design["reserve_margin_pct"],
                     base_gross_profit=_annual["gross_profit"],
                     other_revenue=_other_revenue, other_cost=_other_cost,
+                    fip_indexed_sources=fs_design.get("fip_indexed_sources", {}),
                 )
                 st.session_state["retail_fs_co2"] = retail_fs.calc_co2_and_local_ratio(
                     fs_balance_df, fs_supply_df, fs_design["emission_factors"], fs_design["local_flags"],
