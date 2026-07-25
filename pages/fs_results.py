@@ -255,9 +255,24 @@ else:
                     _jepx_balance_df, jepx_by_month_hour, jepx_actual_series=jepx_actual_series,
                 )
 
-                _freq_label = st.radio("表示単位", ["月次", "日次"], horizontal=True, key="jepx_tab_freq")
-                _freq = "M" if _freq_label == "月次" else "D"
-                _jepx_agg = retail_fs.aggregate_jepx_market_detail(_jepx_detail, freq=_freq)
+                _freq_label = st.radio("表示単位", ["月次", "日次", "時間単位"], horizontal=True, key="jepx_tab_freq")
+
+                if _freq_label == "時間単位":
+                    _date_min = _jepx_detail["datetime"].min().date()
+                    _date_max = _jepx_detail["datetime"].max().date()
+                    _selected_date = st.date_input(
+                        "日付を選択", value=_date_max, min_value=_date_min, max_value=_date_max,
+                        key="jepx_tab_date",
+                    )
+                    _day_df = _jepx_detail[_jepx_detail["datetime"].dt.date == _selected_date].copy()
+                    _jepx_agg = _day_df.rename(columns={"datetime": "period", "jepx_price": "jepx_price_avg"})
+                    _jepx_agg["net"] = _jepx_agg["sale_revenue"] - _jepx_agg["procurement_cost"]
+                    _jepx_agg = _jepx_agg[
+                        ["period", "jepx_price_avg", "deficit_kwh", "surplus_kwh", "procurement_cost", "sale_revenue", "net"]
+                    ]
+                else:
+                    _freq = "M" if _freq_label == "月次" else "D"
+                    _jepx_agg = retail_fs.aggregate_jepx_market_detail(_jepx_detail, freq=_freq)
 
                 if _jepx_agg.empty:
                     st.info("データがありません。")

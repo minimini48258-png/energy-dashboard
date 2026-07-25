@@ -10,6 +10,7 @@ import streamlit as st
 
 import cache_manager
 import grouping
+import jepx_cache_manager
 import supply_cache_manager
 
 st.set_page_config(
@@ -80,6 +81,14 @@ if st.session_state["supply_df"] is None:
         except Exception:
             pass
 
+if st.session_state["jepx_actual_df"] is None:
+    _jepx_entries_boot = jepx_cache_manager.list_entries()
+    if _jepx_entries_boot:
+        try:
+            st.session_state["jepx_actual_df"] = jepx_cache_manager.load(_jepx_entries_boot[0]["cache_id"])
+        except Exception:
+            pass
+
 
 # ---------------------------------------------------------------------------
 # サイドバー：現在の読み込み状況
@@ -99,6 +108,12 @@ with st.sidebar:
     _sdf = st.session_state.get("supply_df")
     if _sdf is not None:
         st.caption(f"⚡ 供給データ: {_sdf['source_name'].nunique()} 電源")
+    _jdf = st.session_state.get("jepx_actual_df")
+    if _jdf is not None:
+        st.caption(
+            f"🔌 JEPX実績: {_jdf['datetime'].min().strftime('%Y/%m/%d')} 〜 "
+            f"{_jdf['datetime'].max().strftime('%Y/%m/%d')}"
+        )
     st.markdown("---")
 
 

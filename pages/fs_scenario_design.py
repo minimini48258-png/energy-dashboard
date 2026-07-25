@@ -14,6 +14,7 @@ import streamlit as st
 
 import common
 import financial_model
+import jepx_cache_manager
 import jepx_loader
 import retail_fs
 import scenario_manager
@@ -258,9 +259,26 @@ with st.container(border=True):
         try:
             _jepx_df = jepx_loader.load_jepx_price_file(jepx_upload, filename=jepx_upload.name)
             st.session_state["jepx_actual_df"] = _jepx_df
-            st.success(f"✅ 実績データ使用中：{_jepx_df['datetime'].min()} 〜 {_jepx_df['datetime'].max()}（{len(_jepx_df):,} 件）")
+            if st.session_state.get("jepx_actual_file_id") != jepx_upload.file_id:
+                jepx_cache_manager.save(_jepx_df, jepx_upload.name)
+                st.session_state["jepx_actual_file_id"] = jepx_upload.file_id
+            st.success(f"✅ 実績データ使用中：{_jepx_df['datetime'].min()} 〜 {_jepx_df['datetime'].max()}（{len(_jepx_df):,} 件）・保存済み")
         except Exception as _jepx_err:
             st.error(f"JEPX実績ファイルの読み込みに失敗しました: {_jepx_err}")
+
+    _jepx_entries = jepx_cache_manager.list_entries()
+    if _jepx_entries:
+        with st.expander(f"🗂 保存済みJEPX実績データ（{len(_jepx_entries)}件）", expanded=False):
+            for _jmeta in _jepx_entries:
+                _jc1, _jc2, _jc3 = st.columns([3, 1, 1])
+                _jc1.caption(f"{_jmeta['filename']}：{_jmeta['date_min']} 〜 {_jmeta['date_max']}（{_jmeta['rows']:,}件）")
+                if _jc2.button("読み込む", key=f"load_jepx_{_jmeta['cache_id']}"):
+                    st.session_state["jepx_actual_df"] = jepx_cache_manager.load(_jmeta["cache_id"])
+                    st.session_state["jepx_actual_file_id"] = None
+                    st.rerun()
+                if _jc3.button("削除", key=f"del_jepx_{_jmeta['cache_id']}"):
+                    jepx_cache_manager.delete(_jmeta["cache_id"])
+                    st.rerun()
 
     st.caption(
         "実績データがない時間帯・データ未アップロード時は下記の目安値（季節×時間帯）を使用します。"
