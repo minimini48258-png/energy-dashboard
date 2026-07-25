@@ -35,32 +35,47 @@ def _source_form(prefix: str, defaults: dict | None = None) -> dict | None:
         ),
         key=f"{prefix}_type",
     )
+    stype_key = supply_planner.SOURCE_TYPE_KEYS.get(stype_lbl, "hydro")
     cap = col3.number_input("設備容量 (kW)", min_value=0.0, value=float(d.get("capacity_kw", 300.0)),
                              step=10.0, key=f"{prefix}_cap")
     cost = col4.number_input("発電コスト (円/kWh)", min_value=0.0,
                               value=float(d.get("cost_per_kwh", 8.0)), step=0.5, key=f"{prefix}_cost")
 
-    st.caption("月別稼働率 (%)")
-    monthly_default = d.get("monthly_utilization_pct", [80.0] * 12)
+    # 種別ごとの目安パターン（太陽光の晴天日カーブ、小水力・バイオマスの安定出力等）を
+    # 初期値として使う。保存済みの値がある場合はそちらを優先する。
+    # ウィジェットキーに種別を含めることで、種別を切り替えると対応する目安パターンが
+    # 初期表示される（一度選んだ種別ごとの編集内容は保持される）。
+    st.caption(
+        f"月別稼働率 (%) ／時間帯別出力比は、種別「{stype_lbl}」の目安パターンを初期値にしています"
+        "（※要確認・一般的な傾向値です）。"
+    )
+    monthly_default = d.get("monthly_utilization_pct") or supply_planner.DEFAULT_MONTHLY_UTILIZATION_BY_TYPE.get(
+        stype_key, [80.0] * 12
+    )
     cols6a = st.columns(6)
     cols6b = st.columns(6)
     monthly = []
     for i, (mn, c) in enumerate(zip(_MONTH_NAMES[:6], cols6a)):
-        monthly.append(c.number_input(mn, 0, 100, int(monthly_default[i]), key=f"{prefix}_m{i}"))
+        monthly.append(c.number_input(mn, 0, 100, int(monthly_default[i]), key=f"{prefix}_{stype_key}_m{i}"))
     for i, (mn, c) in enumerate(zip(_MONTH_NAMES[6:], cols6b)):
-        monthly.append(c.number_input(mn, 0, 100, int(monthly_default[i + 6]), key=f"{prefix}_m{i+6}"))
+        monthly.append(c.number_input(mn, 0, 100, int(monthly_default[i + 6]), key=f"{prefix}_{stype_key}_m{i+6}"))
 
     st.caption("時間帯別出力比")
     preset_opts = list(supply_planner.HOURLY_PRESETS.keys()) + ["カスタム"]
-    hourly_default = d.get("hourly_pattern_pct", [100.0] * 24)
-    matched_preset = "カスタム"
-    for pname, pvals in supply_planner.HOURLY_PRESETS.items():
-        if pvals == hourly_default:
-            matched_preset = pname
-            break
+    saved_hourly = d.get("hourly_pattern_pct")
+    if saved_hourly:
+        hourly_default = saved_hourly
+        matched_preset = "カスタム"
+        for pname, pvals in supply_planner.HOURLY_PRESETS.items():
+            if pvals == hourly_default:
+                matched_preset = pname
+                break
+    else:
+        matched_preset = supply_planner.DEFAULT_HOURLY_PRESET_BY_TYPE.get(stype_key, "常時稼働")
+        hourly_default = supply_planner.HOURLY_PRESETS[matched_preset]
     preset = st.radio("プリセット", preset_opts,
                        index=preset_opts.index(matched_preset),
-                       horizontal=True, key=f"{prefix}_preset")
+                       horizontal=True, key=f"{prefix}_{stype_key}_preset")
     if preset == "カスタム":
         hourly_df = pd.DataFrame({
             "時間帯": [f"{h:02d}:00" for h in range(24)],
@@ -69,7 +84,7 @@ def _source_form(prefix: str, defaults: dict | None = None) -> dict | None:
         edited_h = st.data_editor(
             hourly_df,
             column_config={"出力比(%)": st.column_config.NumberColumn(min_value=0, max_value=100)},
-            hide_index=True, use_container_width=True, height=400, key=f"{prefix}_heditor",
+            hide_index=True, use_container_width=True, height=400, key=f"{prefix}_{stype_key}_heditor",
         )
         hourly = edited_h["出力比(%)"].tolist()
     else:

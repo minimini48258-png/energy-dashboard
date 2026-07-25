@@ -6,6 +6,7 @@ supply_planner.py
 from __future__ import annotations
 
 import json
+import math
 from dataclasses import asdict, dataclass, field
 from pathlib import Path
 from typing import Optional
@@ -14,12 +15,26 @@ import pandas as pd
 
 SOURCES_FILE = Path("/tmp/energy_dashboard/supply_sources.json")
 
+
+def _solar_bell_curve(sunrise: int = 6, sunset: int = 18) -> list[float]:
+    """晴天日を想定した太陽光の時間帯別出力比（%）。日の出〜日の入りを正弦波で近似。"""
+    daylight_h = sunset - sunrise
+    curve = [0.0] * 24
+    for h in range(sunrise, sunset):
+        progress = (h + 0.5 - sunrise) / daylight_h
+        curve[h] = round(100.0 * math.sin(math.pi * progress), 1)
+    return curve
+
+
 HOURLY_PRESETS: dict[str, list[float]] = {
     "常時稼働": [100.0] * 24,
     "昼間のみ（6〜18時）": [0.0] * 6 + [100.0] * 12 + [0.0] * 6,
     "朝夕ピーク（6〜9時・17〜22時）": (
         [0.0] * 6 + [100.0] * 3 + [0.0] * 8 + [100.0] * 5 + [0.0] * 2
     ),
+    "太陽光（晴天日カーブ・6〜18時）": _solar_bell_curve(6, 18),
+    "小水力（終日安定出力）": [100.0] * 24,
+    "バイオマス（終日安定出力）": [100.0] * 24,
 }
 
 SOURCE_TYPE_LABELS = {
@@ -30,6 +45,27 @@ SOURCE_TYPE_LABELS = {
     "other": "その他",
 }
 SOURCE_TYPE_KEYS = {v: k for k, v in SOURCE_TYPE_LABELS.items()}
+
+# 電源種別ごとに初期選択する時間帯プリセット
+DEFAULT_HOURLY_PRESET_BY_TYPE: dict[str, str] = {
+    "solar": "太陽光（晴天日カーブ・6〜18時）",
+    "hydro": "小水力（終日安定出力）",
+    "biomass": "バイオマス（終日安定出力）",
+    "bilateral": "常時稼働",
+    "other": "常時稼働",
+}
+
+# 電源種別ごとの月別稼働率の目安値（%）※要確認・一般的な傾向に基づく目安であり実績値ではない
+DEFAULT_MONTHLY_UTILIZATION_BY_TYPE: dict[str, list[float]] = {
+    # 太陽光: 夏季高め・冬季低め（日照時間・積雪の影響）
+    "solar":    [55.0, 65.0, 75.0, 85.0, 90.0, 85.0, 90.0, 90.0, 80.0, 70.0, 60.0, 50.0],
+    # 小水力: 融雪期（春）に高く、渇水期（冬）に低い
+    "hydro":    [65.0, 70.0, 90.0, 95.0, 85.0, 75.0, 70.0, 65.0, 65.0, 70.0, 70.0, 65.0],
+    # バイオマス: 燃料供給が安定していれば年間を通じほぼ一定（定期点検分を差し引いた目安）
+    "biomass":  [85.0] * 12,
+    "bilateral": [80.0] * 12,
+    "other":    [80.0] * 12,
+}
 
 
 @dataclass
