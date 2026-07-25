@@ -14,40 +14,20 @@ import scenario_manager
 import visualizer
 
 st.title("🔀 小売FS：シナリオ比較")
-st.caption("「シナリオ設計」ページの現在の設定を、名前を付けて保存・比較できます。")
+st.caption("「シナリオ設計」ページで名前を付けて保存したシナリオを一覧・比較できます。")
 
 df = common.require_data()
 facility_names, group_df = common.get_group_context(df)
 filtered_base, group_mode = common.render_facility_filter(df, facility_names, group_df)
 
-fs_design = st.session_state.get("fs_design")
-
-with st.container(border=True):
-    st.markdown("**現在のシナリオ設計を保存**")
-    if not fs_design:
-        st.info("👈 まず「シナリオ設計」ページで設定してください。")
-    else:
-        sc1, sc2 = st.columns([3, 1])
-        scenario_name = sc1.text_input("シナリオ名", key="scenario_name_input", placeholder="例: 標準シナリオ")
-        if sc2.button("💾 保存", key="save_scenario_btn"):
-            if not scenario_name:
-                st.error("シナリオ名を入力してください。")
-            else:
-                _scenario = scenario_manager.Scenario(
-                    name=scenario_name,
-                    fs_design=fs_design,
-                    supply_sources=st.session_state.get("supply_sources", []),
-                )
-                scenario_manager.save_scenario(_scenario)
-                st.success(f"シナリオ「{scenario_name}」を保存しました。")
-                st.rerun()
-
 saved_scenarios = scenario_manager.load_scenarios()
 
 if not saved_scenarios:
-    st.caption("保存済みシナリオはありません。")
+    st.info(
+        "保存済みシナリオはありません。「シナリオ設計」ページの下部で"
+        "名前を付けて保存すると、ここに表示されます。"
+    )
 else:
-    st.markdown("---")
     st.caption(f"保存済みシナリオ: {', '.join(s.name for s in saved_scenarios)}")
 
     del_col1, del_col2 = st.columns([3, 1])
@@ -56,10 +36,7 @@ else:
         scenario_manager.delete_scenario(del_target)
         st.rerun()
 
-    period = st.selectbox(
-        "比較対象期間", ["全データ期間", "直近1年", "直近6か月", "直近3か月"], index=1, key="cmp_period",
-    )
-    cmp_demand_df = common.filter_by_period_option(filtered_base, period)
+    cmp_demand_df = common.render_period_selector(filtered_base, key_prefix="cmp")
 
     if st.button("▶ 全シナリオを一括計算して比較", key="compare_scenarios_btn"):
         with st.spinner("全シナリオを計算中..."):

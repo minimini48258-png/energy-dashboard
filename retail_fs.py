@@ -607,17 +607,29 @@ def calc_facility_pl(
 # 資金繰り（月次キャッシュフロー）
 # ---------------------------------------------------------------------------
 
-def calc_cash_flow(monthly_df: pd.DataFrame, capital_yen: float) -> pd.DataFrame:
+def calc_cash_flow(
+    monthly_df: pd.DataFrame,
+    capital_yen: float,
+    revenue_collection_lag_months: int = 0,
+) -> pd.DataFrame:
     """
     月次キャッシュフローの簡易試算。
-    売掛金・買掛金のタイムラグ、減価償却・設備投資は考慮せず、
-    当月純利益＝当月キャッシュフローとみなす簡易モデル（※要確認）。
-    現金残高 = 資本金 + 当期純利益の累積。
+    売上代金の入金は revenue_collection_lag_months ヶ月遅れて発生すると仮定する
+    （利用料回収のタイムラグ）。費用側（電力調達費・託送料金・容量拠出金・販管費・
+    再エネ賦課金納付・法人税等）は発生月に支払われるものとする（簡易モデル・※要確認）。
+    減価償却・設備投資・売掛金以外の運転資本の変動は考慮しない。
+    現金残高 = 資本金 + 月次キャッシュフローの累積。
     """
-    cf = monthly_df[["month", "net_income"]].copy().sort_values("month").reset_index(drop=True)
-    cf = cf.rename(columns={"net_income": "net_cash_flow"})
+    cf = monthly_df[
+        ["month", "sales_revenue", "levy_revenue", "cost_of_sales", "sga_cost", "corporate_tax"]
+    ].copy().sort_values("month").reset_index(drop=True)
+
+    cf["cash_in"] = cf["sales_revenue"].shift(revenue_collection_lag_months).fillna(0.0)
+    cf["cash_out"] = cf["cost_of_sales"] + cf["levy_revenue"] + cf["sga_cost"] + cf["corporate_tax"]
+    cf["net_cash_flow"] = cf["cash_in"] - cf["cash_out"]
     cf["cash_balance"] = capital_yen + cf["net_cash_flow"].cumsum()
-    return cf
+
+    return cf[["month", "cash_in", "cash_out", "net_cash_flow", "cash_balance"]]
 
 
 def sensitivity_jepx_shift(

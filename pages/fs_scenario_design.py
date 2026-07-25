@@ -16,6 +16,7 @@ import common
 import financial_model
 import jepx_loader
 import retail_fs
+import scenario_manager
 import supply_planner
 
 st.title("📝 小売FS：シナリオ設計")
@@ -315,6 +316,7 @@ with st.container(border=True):
 # ── ⑥ 電源別 調達コスト・排出係数・地域内フラグ ──────────────────────
 _all_src_names: list[str] = []
 _src_default_cost: dict[str, float] = {}
+_src_capacity_kw: dict[str, float] = {}
 if _uploaded is not None:
     for sn in sorted(_uploaded["source_name"].unique()):
         _all_src_names.append(sn)
@@ -323,19 +325,25 @@ for src in _sources:
     if src.name not in _all_src_names:
         _all_src_names.append(src.name)
     _src_default_cost[src.name] = src.cost_per_kwh
+    _src_capacity_kw[src.name] = src.capacity_kw
 
 source_costs: dict[str, float] = {}
 emission_factors: dict[str, float] = {}
 local_flags: dict[str, bool] = {}
+procurement_ratios: dict[str, float] = {}
 with st.container(border=True):
-    st.markdown("**⑥ 電源別 調達コスト・排出係数・地域内フラグ**")
-    st.caption("相対電源（固定単価での相対契約）も「電源管理」で登録した電源として、ここで単価を設定できます。")
+    st.markdown("**⑥ 電源別 調達コスト・排出係数・地域内フラグ・調達比率**")
+    st.caption(
+        "相対電源（固定単価での相対契約）も「電源管理」で登録した電源として、ここで単価を設定できます。"
+        "「調達比率」は、登録された発電量・供給実績のうち実際に調達する割合です（例: 相対電源の一部だけ契約する場合など）。"
+    )
     _saved_source_costs = _saved.get("source_costs", {})
     _saved_emission_factors = _saved.get("emission_factors", {})
     _saved_local_flags = _saved.get("local_flags", {})
+    _saved_procurement_ratios = _saved.get("procurement_ratios", {})
     if _all_src_names:
         for sn in _all_src_names:
-            sc1, sc2, sc3 = st.columns([2, 1, 1])
+            sc1, sc2, sc3, sc4 = st.columns([2, 1, 1, 1.4])
             sc1.markdown(f"　{sn}")
             source_costs[sn] = sc1.number_input(
                 "発電コスト(円/kWh)", min_value=0.0,
@@ -349,6 +357,14 @@ with st.container(border=True):
             local_flags[sn] = sc3.checkbox(
                 "地域内電源", value=_saved_local_flags.get(sn, False), key=f"fs_local_{sn}",
             )
+            _proc_ratio = sc4.number_input(
+                "調達比率(%)", min_value=0.0, max_value=200.0,
+                value=_saved_procurement_ratios.get(sn, 100.0),
+                step=5.0, key=f"fs_proc_pct_{sn}",
+            )
+            procurement_ratios[sn] = _proc_ratio
+            if sn in _src_capacity_kw:
+                sc4.caption(f"登録容量 {_src_capacity_kw[sn]:.0f}kW → 約{_src_capacity_kw[sn]*_proc_ratio/100:.0f}kW調達")
     else:
         st.caption("電源が登録されていません（「データ読み込み」でアップロードするか「電源管理」で登録してください）。"
                    "登録がない場合は全量をJEPX市場から調達する前提で試算します。")
@@ -390,11 +406,17 @@ with st.container(border=True):
 # ── ⑧ 資金繰りの前提 ────────────────────────────────────────────────
 with st.container(border=True):
     st.markdown("**⑧ 資金繰りの前提**")
-    capital = st.number_input(
+    cap_col, lag_col = st.columns(2)
+    capital = cap_col.number_input(
         "資本金（初期現金残高・円）", min_value=0.0,
         value=_saved.get("capital_yen", 0.0), step=1_000_000.0, key="fs_capital",
-        help="「試算結果」の資金繰りタブで、現金残高の起点として使用します。"
-             "売掛金・買掛金のタイムラグや設備投資は考慮しない簡易モデルです。",
+        help="「試算結果」の資金繰りタブで、現金残高の起点として使用します。",
+    )
+    collection_lag = lag_col.number_input(
+        "売上代金回収ラグ（ヶ月）", min_value=0, max_value=12,
+        value=int(_saved.get("collection_lag_months", 2)), step=1, key="fs_collection_lag",
+        help="利用料の入金が発生月から何ヶ月遅れるか。費用（電力調達費・託送料金・"
+             "容量拠出金・販管費・法人税等）は発生月に支払われるものとして扱います（簡易モデル）。",
     )
 
 # ── シナリオ設計を組み立てて保存 ──────────────────────────────────────
@@ -410,17 +432,32 @@ _fs_design = {
     "source_costs": source_costs,
     "emission_factors": emission_factors,
     "local_flags": local_flags,
+    "procurement_ratios": procurement_ratios,
     "sga_items": sga_items,
     "corporate_tax_rate_pct": tax_rate,
     "capital_yen": capital,
+    "collection_lag_months": collection_lag,
 }
 st.session_state["fs_design"] = _fs_design
+# 下書きとして常に自動保存（ブラウザを閉じても・別セッションでも直近の編集内容を復元するため）
+retail_fs.save_fs_design(_fs_design)
 
 st.markdown("---")
+st.markdown("**シナリオとして保存**")
 st.caption(
-    "設定内容は「試算結果」ページですぐに使えます。ブラウザを閉じても引き継ぎたい場合は、"
-    "下のボタンで保存してください（① 料金プラン・② 施設設定は既にそれぞれ個別に保存済みです）。"
+    "名前を付けて保存すると「シナリオ比較」ページで他のシナリオと比較できます"
+    "（① 料金プラン・② 施設設定は既にそれぞれ個別に保存済みで、直近の編集内容は自動的に下書き保存されています）。"
 )
-if st.button("💾 シナリオ設計を保存", type="primary", key="fs_design_save"):
-    retail_fs.save_fs_design(_fs_design)
-    st.success("✅ シナリオ設計を保存しました。次回アクセス時も同じ設定が復元されます。")
+_name_col, _save_col = st.columns([3, 1])
+_scenario_name = _name_col.text_input("シナリオ名", key="fs_scenario_name", placeholder="例: 標準シナリオ")
+if _save_col.button("💾 シナリオを保存", type="primary", key="fs_design_save"):
+    if not _scenario_name:
+        st.error("シナリオ名を入力してください。")
+    else:
+        _scenario = scenario_manager.Scenario(
+            name=_scenario_name,
+            fs_design=_fs_design,
+            supply_sources=st.session_state.get("supply_sources", []),
+        )
+        scenario_manager.save_scenario(_scenario)
+        st.success(f"✅ シナリオ「{_scenario_name}」を保存しました。「シナリオ比較」ページで比較できます。")

@@ -81,6 +81,53 @@ def filter_by_period_option(base_df: pd.DataFrame, period_option: str) -> pd.Dat
     return base_df
 
 
+def _fiscal_year_of(ts: pd.Timestamp, start_month: int) -> int:
+    """ある日時が属する年度（開始月基準）を返す。例: start_month=4なら2026-03は2025年度。"""
+    return ts.year if ts.month >= start_month else ts.year - 1
+
+
+def available_fiscal_years(base_df: pd.DataFrame, start_month: int) -> list[int]:
+    """データ期間に含まれる年度（開始月基準）の一覧を返す。"""
+    dt_min, dt_max = base_df["datetime"].min(), base_df["datetime"].max()
+    return list(range(_fiscal_year_of(dt_min, start_month), _fiscal_year_of(dt_max, start_month) + 1))
+
+
+def fiscal_year_range(start_month: int, fiscal_year: int) -> tuple[pd.Timestamp, pd.Timestamp]:
+    """年度（開始月基準）の開始・終了日時を返す。"""
+    start = pd.Timestamp(year=fiscal_year, month=start_month, day=1)
+    end = start + pd.DateOffset(years=1) - pd.Timedelta(seconds=1)
+    return start, end
+
+
+def render_period_selector(base_df: pd.DataFrame, key_prefix: str, default_index: int = 1) -> pd.DataFrame:
+    """
+    「全データ期間／直近1年／直近6か月／直近3か月／年度で指定」の期間セレクタを描画し、
+    フィルタ後のDataFrameを返す。「年度で指定」では開始月（例: 4月〜）と対象年度を選べる。
+    """
+    options = PERIOD_OPTIONS + ["年度で指定"]
+    choice = st.selectbox("分析期間", options, index=default_index, key=f"{key_prefix}_period_mode")
+    if choice != "年度で指定":
+        return filter_by_period_option(base_df, choice)
+
+    col1, col2 = st.columns(2)
+    start_month = col1.selectbox(
+        "年度の開始月", list(range(1, 13)), index=3, format_func=lambda m: f"{m}月",
+        key=f"{key_prefix}_fy_start_month",
+    )
+    years = available_fiscal_years(base_df, start_month)
+    if not years:
+        return base_df.iloc[0:0]
+    end_month = start_month - 1 if start_month > 1 else 12
+    end_month_label = f"{end_month}月" if start_month == 1 else f"翌{end_month}月"
+    year_labels = [f"{y}年度（{start_month}月〜{end_month_label}）" for y in years]
+    sel_idx = col2.selectbox(
+        "対象年度", list(range(len(years))), format_func=lambda i: year_labels[i],
+        index=len(years) - 1, key=f"{key_prefix}_fy_year",
+    )
+    start, end = fiscal_year_range(start_month, years[sel_idx])
+    return analyzer.filter_by_period(base_df, start, end)
+
+
 def render_period_and_kpis(
     filtered_base: pd.DataFrame,
     group_mode: str,

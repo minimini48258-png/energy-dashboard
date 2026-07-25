@@ -37,6 +37,8 @@ jepx_by_month_hour = {
 _jepx_actual_df = st.session_state.get("jepx_actual_df")
 jepx_actual_series = _jepx_actual_df.set_index("datetime")["jepx_price_yen"] if _jepx_actual_df is not None else None
 capital_yen = fs_design.get("capital_yen", 0.0)
+collection_lag_months = int(fs_design.get("collection_lag_months", 2))
+procurement_ratios = fs_design.get("procurement_ratios", {})
 
 _uploaded = st.session_state.get("supply_df")
 _supply_parts = []
@@ -46,10 +48,7 @@ if _uploaded is not None:
     _supply_parts.append(_filtered_upload)
 _sources = [supply_planner.SupplySource(**s) for s in st.session_state.get("supply_sources", [])]
 
-fs_period = st.selectbox(
-    "分析期間", ["全データ期間", "直近1年", "直近6か月", "直近3か月"], index=1, key="fs_period",
-)
-fs_demand_df = common.filter_by_period_option(filtered_base, fs_period)
+fs_demand_df = common.render_period_selector(filtered_base, key_prefix="fs")
 
 if st.button("▶ 小売FS試算実行", type="primary", key="run_retail_fs"):
     if fs_demand_df.empty:
@@ -67,6 +66,7 @@ if st.button("▶ 小売FS試算実行", type="primary", key="run_retail_fs"):
                     pd.concat(supply_parts, ignore_index=True) if supply_parts
                     else pd.DataFrame(columns=["datetime", "source_name", "supply_kwh"])
                 )
+                fs_supply_df = supply_planner.apply_procurement_ratios(fs_supply_df, procurement_ratios)
                 fs_balance_df = financial_model.calc_balance(fs_demand_df, fs_supply_df)
 
                 result = retail_fs.run_fs(
@@ -204,7 +204,7 @@ else:
 
         # ── 📈 需要分析 ──────────────────────────────────────────────
         with tab_demand:
-            st.caption(f"この試算で使用した需要データ（{fs_period}）の分析です。")
+            st.caption("この試算で使用した需要データの分析です。")
             if _result_demand_df is None or _result_demand_df.empty:
                 st.info("需要データがありません。")
             else:
@@ -283,10 +283,12 @@ else:
         # ── 💰 資金繰り ──────────────────────────────────────────────
         with tab_cashflow:
             st.caption(
-                "簡易モデル：売掛金・買掛金のタイムラグ、減価償却・設備投資は考慮せず、"
-                "当月純利益＝当月キャッシュフローとみなしています。現金残高＝資本金＋当期純利益の累積。"
+                f"簡易モデル：売上代金の入金は発生月から{collection_lag_months}ヶ月遅れると仮定しています"
+                "（「シナリオ設計」⑧で変更可）。費用（電力調達費・託送料金・容量拠出金・販管費・法人税等）"
+                "は発生月に支払われるものとして扱い、減価償却・設備投資は考慮しません。"
+                "現金残高＝資本金＋月次キャッシュフローの累積。"
             )
-            _cf = retail_fs.calc_cash_flow(_monthly, capital_yen)
+            _cf = retail_fs.calc_cash_flow(_monthly, capital_yen, revenue_collection_lag_months=collection_lag_months)
             cf1, cf2, cf3 = st.columns(3)
             cf1.metric("資本金（期首現金残高）", f"{capital_yen/10000:,.0f} 万円")
             cf2.metric("期末現金残高", f"{_cf['cash_balance'].iloc[-1]/10000:,.0f} 万円" if not _cf.empty else "—")
@@ -300,15 +302,13 @@ else:
                 with st.expander("月別キャッシュフロー・テーブル"):
                     _cf_tbl = _cf.copy()
                     _cf_tbl["month"] = _cf_tbl["month"].dt.strftime("%Y-%m")
+                    _cf_tbl = _cf_tbl.rename(columns={
+                        "month": "月", "cash_in": "入金(円)", "cash_out": "出金(円)",
+                        "net_cash_flow": "月次キャッシュフロー(円)", "cash_balance": "現金残高(円)",
+                    }).set_index("月")
                     st.dataframe(
-                        _cf_tbl.rename(columns={
-                            "month": "月", "net_cash_flow": "月次キャッシュフロー(円)", "cash_balance": "現金残高(円)",
-                        }).set_index("月"),
-                        use_container_width=True,
-                        column_config={
-                            "月次キャッシュフロー(円)": st.column_config.NumberColumn("月次キャッシュフロー(円)", format="%,.0f"),
-                            "現金残高(円)": st.column_config.NumberColumn("現金残高(円)", format="%,.0f"),
-                        },
+                        _cf_tbl, use_container_width=True,
+                        column_config={c: st.column_config.NumberColumn(c, format="%,.0f") for c in _cf_tbl.columns},
                     )
     except Exception as e:
         st.error(

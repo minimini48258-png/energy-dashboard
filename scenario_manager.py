@@ -74,6 +74,7 @@ def run_scenario(scenario: Scenario, demand_df: pd.DataFrame) -> dict:
     sources = [supply_planner.SupplySource(**s) for s in scenario.supply_sources]
     ts = pd.DatetimeIndex(demand_df["datetime"].sort_values().unique())
     supply_df = supply_planner.combine_supply_profiles(sources, ts)
+    supply_df = supply_planner.apply_procurement_ratios(supply_df, design.get("procurement_ratios", {}))
     balance_df = financial_model.calc_balance(demand_df, supply_df)
 
     return retail_fs.run_fs(

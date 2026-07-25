@@ -95,6 +95,23 @@ def combine_supply_profiles(
     )
 
 
+def apply_procurement_ratios(
+    supply_df: pd.DataFrame,
+    ratios_pct: dict[str, float],
+) -> pd.DataFrame:
+    """
+    電源ごとの調達比率（%）を supply_kwh に乗じる。
+    未指定の電源は100%（そのまま）として扱う。
+    """
+    if supply_df.empty or not ratios_pct:
+        return supply_df
+    df = supply_df.copy()
+    df["supply_kwh"] = df["supply_kwh"] * (
+        df["source_name"].map(ratios_pct).fillna(100.0) / 100.0
+    )
+    return df
+
+
 def save_sources(sources: list[SupplySource]) -> None:
     SOURCES_FILE.parent.mkdir(parents=True, exist_ok=True)
     SOURCES_FILE.write_text(

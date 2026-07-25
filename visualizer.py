@@ -739,21 +739,32 @@ def cash_flow_chart(
     cashflow_df: pd.DataFrame,
     title: str = "月次キャッシュフロー",
 ) -> go.Figure:
-    """月次キャッシュフロー（棒）＋現金残高（累計・折れ線）。"""
+    """入金（棒・正）／出金（棒・負）＋現金残高（累計・折れ線）。"""
     df = cashflow_df.copy()
     df["month_str"] = _month_labels(df["month"])
     scale = 1_000  # 円 → 千円
 
     fig = go.Figure()
-    fig.add_trace(go.Bar(
-        x=df["month_str"], y=df["net_cash_flow"] / scale, name="月次キャッシュフロー",
-        marker_color=[FS_PROFIT_COLOR if v >= 0 else FS_COST_COLOR for v in df["net_cash_flow"]],
-    ))
+    if "cash_in" in df.columns and "cash_out" in df.columns:
+        fig.add_trace(go.Bar(
+            x=df["month_str"], y=df["cash_in"] / scale, name="入金（売上代金回収）",
+            marker_color=FS_PROFIT_COLOR,
+        ))
+        fig.add_trace(go.Bar(
+            x=df["month_str"], y=-df["cash_out"] / scale, name="出金（費用支払）",
+            marker_color=FS_COST_COLOR,
+        ))
+    else:
+        fig.add_trace(go.Bar(
+            x=df["month_str"], y=df["net_cash_flow"] / scale, name="月次キャッシュフロー",
+            marker_color=[FS_PROFIT_COLOR if v >= 0 else FS_COST_COLOR for v in df["net_cash_flow"]],
+        ))
     fig.add_trace(go.Scatter(
         x=df["month_str"], y=df["cash_balance"] / scale, name="現金残高（累計）",
         line=dict(color=_FS_TITLE_COLOR, width=3), mode="lines+markers", marker=dict(size=6),
     ))
     fig.update_layout(
+        barmode="relative",
         template="plotly_white",
         title=dict(text=title, font=dict(size=18, color=_FS_TITLE_COLOR)),
         xaxis=dict(tickangle=-30),
