@@ -837,3 +837,59 @@ def retail_fs_sensitivity_chart(
         height=350,
     )
     return fig
+
+
+# ---------------------------------------------------------------------------
+# JEPX市場取引の可視化
+# ---------------------------------------------------------------------------
+
+def jepx_price_trend_chart(
+    market_df: pd.DataFrame,
+    freq_label: str = "月次",
+    title: str | None = None,
+) -> go.Figure:
+    """JEPX想定単価の推移（日次/月次平均）を折れ線で表示。"""
+    df = market_df.copy()
+    x = pd.to_datetime(df["period"]).dt.strftime("%Y-%m-%d" if freq_label == "日次" else "%Y-%m")
+    fig = go.Figure(go.Scatter(
+        x=x, y=df["jepx_price_avg"], name="JEPX想定単価（平均）",
+        line=dict(color=_FS_TITLE_COLOR, width=2), mode="lines+markers", marker=dict(size=5),
+    ))
+    fig.update_layout(
+        template="plotly_white",
+        title=dict(text=title or f"JEPX想定単価の推移（{freq_label}平均）", font=dict(size=18, color=_FS_TITLE_COLOR)),
+        xaxis=dict(tickangle=-30),
+        yaxis=dict(title="円/kWh"),
+        hovermode="x unified",
+        margin=dict(l=20, r=20, t=60, b=40),
+        showlegend=False,
+    )
+    return fig
+
+
+def jepx_volume_chart(
+    market_df: pd.DataFrame,
+    freq_label: str = "月次",
+    title: str | None = None,
+) -> go.Figure:
+    """JEPXからの調達量（不足分・棒）／JEPXへの売電量（余剰分・棒）の推移。"""
+    df = market_df.copy()
+    x = pd.to_datetime(df["period"]).dt.strftime("%Y-%m-%d" if freq_label == "日次" else "%Y-%m")
+    fig = go.Figure()
+    fig.add_trace(go.Bar(
+        x=x, y=-df["deficit_kwh"], name="調達量（不足分・買い）", marker_color=FS_COST_COLOR,
+    ))
+    fig.add_trace(go.Bar(
+        x=x, y=df["surplus_kwh"], name="売電量（余剰分・売り）", marker_color=FS_PROFIT_COLOR,
+    ))
+    fig.update_layout(
+        barmode="relative",
+        template="plotly_white",
+        title=dict(text=title or f"JEPX調達量・売電量の推移（{freq_label}）", font=dict(size=18, color=_FS_TITLE_COLOR)),
+        xaxis=dict(tickangle=-30),
+        yaxis=dict(title="kWh"),
+        hovermode="x unified",
+        margin=dict(l=20, r=20, t=60, b=40),
+        legend=dict(orientation="h", yanchor="bottom", y=1.02, xanchor="right", x=1),
+    )
+    return fig

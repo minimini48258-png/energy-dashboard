@@ -156,8 +156,8 @@ else:
         _result_supply_df = st.session_state.get("fs_supply_df")
 
         st.markdown("---")
-        tab_pl, tab_demand, tab_pattern8, tab_facility, tab_cashflow = st.tabs(
-            ["📊 損益計算書", "📈 需要分析", "📅 8パターン分析", "🏢 施設別収支", "💰 資金繰り"]
+        tab_pl, tab_jepx, tab_demand, tab_pattern8, tab_facility, tab_cashflow = st.tabs(
+            ["📊 損益計算書", "🔌 JEPX取引", "📈 需要分析", "📅 8パターン分析", "🏢 施設別収支", "💰 資金繰り"]
         )
 
         # ── 📊 損益計算書 ────────────────────────────────────────────
@@ -235,6 +235,92 @@ else:
             if _sens_df is not None and not _sens_df.empty:
                 st.markdown("**感度分析：JEPX価格が変動した場合の売上総利益（粗利益）**")
                 st.plotly_chart(visualizer.retail_fs_sensitivity_chart(_sens_df), use_container_width=True)
+
+        # ── 🔌 JEPX取引 ──────────────────────────────────────────────
+        with tab_jepx:
+            st.caption(
+                "この試算で使用したJEPX想定単価（実績データがあればそちらを優先）と、"
+                "不足分（JEPXからの調達）・余剰分（JEPXへの売電）の推移を表示します。"
+            )
+            if _result_demand_df is None or _result_demand_df.empty:
+                st.info("需要データがありません。")
+            else:
+                _jepx_balance_df = financial_model.calc_balance(
+                    _result_demand_df,
+                    _result_supply_df if _result_supply_df is not None else pd.DataFrame(
+                        columns=["datetime", "source_name", "supply_kwh"]
+                    ),
+                )
+                _jepx_detail = retail_fs.calc_jepx_market_detail(
+                    _jepx_balance_df, jepx_by_month_hour, jepx_actual_series=jepx_actual_series,
+                )
+
+                _freq_label = st.radio("表示単位", ["月次", "日次"], horizontal=True, key="jepx_tab_freq")
+                _freq = "M" if _freq_label == "月次" else "D"
+                _jepx_agg = retail_fs.aggregate_jepx_market_detail(_jepx_detail, freq=_freq)
+
+                if _jepx_agg.empty:
+                    st.info("データがありません。")
+                else:
+                    j1, j2, j3, j4 = st.columns(4)
+                    j1.metric("調達量合計（不足分）", f"{_jepx_agg['deficit_kwh'].sum():,.0f} kWh")
+                    j2.metric("調達コスト合計", f"{_jepx_agg['procurement_cost'].sum()/10000:,.0f} 万円")
+                    j3.metric("売電量合計（余剰分）", f"{_jepx_agg['surplus_kwh'].sum():,.0f} kWh")
+                    j4.metric("売電収入合計", f"{_jepx_agg['sale_revenue'].sum()/10000:,.0f} 万円")
+
+                    st.plotly_chart(
+                        visualizer.jepx_price_trend_chart(_jepx_agg, freq_label=_freq_label),
+                        use_container_width=True,
+                    )
+                    st.plotly_chart(
+                        visualizer.jepx_volume_chart(_jepx_agg, freq_label=_freq_label),
+                        use_container_width=True,
+                    )
+                    with st.expander(f"{_freq_label}数値テーブル"):
+                        _jepx_tbl = _jepx_agg.rename(columns={
+                            "period": "期間", "jepx_price_avg": "JEPX想定単価平均(円/kWh)",
+                            "deficit_kwh": "調達量(kWh)", "surplus_kwh": "売電量(kWh)",
+                            "procurement_cost": "調達コスト(円)", "sale_revenue": "売電収入(円)",
+                            "net": "純額(円)",
+                        }).set_index("期間")
+                        st.dataframe(
+                            _jepx_tbl, use_container_width=True,
+                            column_config={
+                                c: st.column_config.NumberColumn(c, format="%,.1f" if "単価" in c else "%,.0f")
+                                for c in _jepx_tbl.columns
+                            },
+                        )
+
+                _fip_detail = retail_fs.calc_fip_source_detail(
+                    _result_supply_df if _result_supply_df is not None else pd.DataFrame(
+                        columns=["datetime", "source_name", "supply_kwh"]
+                    ),
+                    jepx_by_month_hour, fs_design.get("source_costs", {}),
+                    fip_indexed_sources=fs_design.get("fip_indexed_sources", {}),
+                    jepx_actual_series=jepx_actual_series,
+                )
+                if not _fip_detail.empty:
+                    st.markdown("**JEPX価格連動電源（FIP買取等）の明細**")
+                    st.caption(
+                        "登録した供給量の全量を「JEPX想定単価＋スプレッド」で買い取る前提のため、"
+                        "自家消費しきれず余剰分をJEPX想定単価（スプレッドなし）で再売電すると、"
+                        "その差額（スプレッド分）が電源1kWhあたりの目減りになります。"
+                    )
+                    _fip_disp = _fip_detail.rename(columns={
+                        "source_name": "電源名", "kwh": "供給量(kWh)",
+                        "avg_jepx_price": "平均JEPX単価(円/kWh)", "spread": "スプレッド(円/kWh)",
+                        "avg_unit_cost": "実効調達単価(円/kWh)", "total_cost": "総調達コスト(円)",
+                    })
+                    st.dataframe(
+                        _fip_disp.set_index("電源名"), use_container_width=True,
+                        column_config={
+                            "供給量(kWh)": st.column_config.NumberColumn("供給量(kWh)", format="%,.0f"),
+                            "平均JEPX単価(円/kWh)": st.column_config.NumberColumn("平均JEPX単価(円/kWh)", format="%.2f"),
+                            "スプレッド(円/kWh)": st.column_config.NumberColumn("スプレッド(円/kWh)", format="%.2f"),
+                            "実効調達単価(円/kWh)": st.column_config.NumberColumn("実効調達単価(円/kWh)", format="%.2f"),
+                            "総調達コスト(円)": st.column_config.NumberColumn("総調達コスト(円)", format="%,.0f"),
+                        },
+                    )
 
         # ── 📈 需要分析 ──────────────────────────────────────────────
         with tab_demand:

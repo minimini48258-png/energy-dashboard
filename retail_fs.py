@@ -452,6 +452,101 @@ def calc_procurement_cost(
 
 
 # ---------------------------------------------------------------------------
+# JEPX市場取引の可視化（不足分の調達・余剰分の売電）
+# ---------------------------------------------------------------------------
+
+def calc_jepx_market_detail(
+    balance_df: pd.DataFrame,
+    jepx_price_by_month_hour: dict[tuple[int, int], float],
+    jepx_actual_series: pd.Series | None = None,
+) -> pd.DataFrame:
+    """
+    30分コマ単位のJEPX市場価格・不足量（調達）・余剰量（売電）を計算する。
+    自社電源の発電コストや予備費率は含まない、JEPX市場との直接の売買のみを表す。
+    """
+    df = balance_df.copy()
+    df["_cal_month"] = df["datetime"].dt.month
+    df["hour"] = df["datetime"].dt.hour
+    df["jepx_price"] = [
+        jepx_price_by_month_hour.get((m, h), 15.0) for m, h in zip(df["_cal_month"], df["hour"])
+    ]
+    if jepx_actual_series is not None and not jepx_actual_series.empty:
+        actual_vals = df["datetime"].map(jepx_actual_series)
+        df["jepx_price"] = actual_vals.combine_first(df["jepx_price"])
+    df["procurement_cost"] = df["deficit_kwh"] * df["jepx_price"]
+    df["sale_revenue"] = df["surplus_kwh"] * df["jepx_price"]
+    return df[["datetime", "jepx_price", "deficit_kwh", "surplus_kwh", "procurement_cost", "sale_revenue"]]
+
+
+def aggregate_jepx_market_detail(detail_df: pd.DataFrame, freq: str = "M") -> pd.DataFrame:
+    """calc_jepx_market_detail の結果を日次（freq="D"）または月次（"M"）に集約する。"""
+    if detail_df.empty:
+        return pd.DataFrame(columns=[
+            "period", "jepx_price_avg", "deficit_kwh", "surplus_kwh",
+            "procurement_cost", "sale_revenue", "net",
+        ])
+    df = detail_df.copy()
+    df["period"] = df["datetime"].dt.date if freq == "D" else df["datetime"].dt.to_period("M").dt.to_timestamp()
+    agg = df.groupby("period", as_index=False).agg(
+        jepx_price_avg=("jepx_price", "mean"),
+        deficit_kwh=("deficit_kwh", "sum"),
+        surplus_kwh=("surplus_kwh", "sum"),
+        procurement_cost=("procurement_cost", "sum"),
+        sale_revenue=("sale_revenue", "sum"),
+    )
+    if freq == "D":
+        agg["period"] = pd.to_datetime(agg["period"])
+    agg["net"] = agg["sale_revenue"] - agg["procurement_cost"]
+    return agg.sort_values("period").reset_index(drop=True)
+
+
+def calc_fip_source_detail(
+    supply_df: pd.DataFrame,
+    jepx_price_by_month_hour: dict[tuple[int, int], float],
+    source_costs: dict[str, float],
+    fip_indexed_sources: dict[str, bool] | None = None,
+    jepx_actual_series: pd.Series | None = None,
+) -> pd.DataFrame:
+    """
+    JEPX価格連動（FIP買取等）の電源ごとに、供給量・平均JEPX価格・スプレッド・
+    実効調達単価・総調達コストを算出する。
+    """
+    _cols = ["source_name", "kwh", "avg_jepx_price", "spread", "avg_unit_cost", "total_cost"]
+    fip_names = {n for n, v in (fip_indexed_sources or {}).items() if v}
+    if supply_df.empty or not fip_names:
+        return pd.DataFrame(columns=_cols)
+
+    _s = supply_df[supply_df["source_name"].isin(fip_names)].copy()
+    if _s.empty:
+        return pd.DataFrame(columns=_cols)
+
+    _s["_cal_month"] = _s["datetime"].dt.month
+    _s["hour"] = _s["datetime"].dt.hour
+    _s["jepx_price"] = [
+        jepx_price_by_month_hour.get((m, h), 15.0) for m, h in zip(_s["_cal_month"], _s["hour"])
+    ]
+    if jepx_actual_series is not None and not jepx_actual_series.empty:
+        actual_vals = _s["datetime"].map(jepx_actual_series)
+        _s["jepx_price"] = actual_vals.combine_first(_s["jepx_price"])
+    _s["spread"] = _s["source_name"].map(source_costs).fillna(0.0)
+    _s["cost"] = (_s["jepx_price"] + _s["spread"]) * _s["supply_kwh"]
+
+    rows = []
+    for name, g in _s.groupby("source_name"):
+        kwh = float(g["supply_kwh"].sum())
+        total_cost = float(g["cost"].sum())
+        rows.append({
+            "source_name": name,
+            "kwh": kwh,
+            "avg_jepx_price": float(g["jepx_price"].mean()) if not g.empty else 0.0,
+            "spread": float(source_costs.get(name, 0.0)),
+            "avg_unit_cost": (total_cost / kwh) if kwh else 0.0,
+            "total_cost": total_cost,
+        })
+    return pd.DataFrame(rows, columns=_cols)
+
+
+# ---------------------------------------------------------------------------
 # 統合試算
 # ---------------------------------------------------------------------------
 
