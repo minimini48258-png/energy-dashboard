@@ -88,6 +88,7 @@ if st.button("▶ 小売FS試算実行", type="primary", key="run_retail_fs"):
                 )
                 st.session_state["retail_fs_result"] = result
                 st.session_state["fs_demand_df"] = fs_demand_df
+                st.session_state["fs_supply_df"] = fs_supply_df
 
                 _annual = result["annual"]
                 _other_revenue = _annual["basic_revenue"] + _annual["volumetric_revenue"] + _annual["fuel_adj_revenue"]
@@ -120,10 +121,11 @@ else:
                 _monthly[_col] = pd.to_numeric(_monthly[_col], errors="coerce").fillna(0.0)
         _co2 = st.session_state.get("retail_fs_co2") or {}
         _result_demand_df = st.session_state.get("fs_demand_df", fs_demand_df)
+        _result_supply_df = st.session_state.get("fs_supply_df")
 
         st.markdown("---")
-        tab_pl, tab_demand, tab_facility, tab_cashflow = st.tabs(
-            ["📊 損益計算書", "📈 需要分析", "🏢 施設別収支", "💰 資金繰り"]
+        tab_pl, tab_demand, tab_pattern8, tab_facility, tab_cashflow = st.tabs(
+            ["📊 損益計算書", "📈 需要分析", "📅 8パターン分析", "🏢 施設別収支", "💰 資金繰り"]
         )
 
         # ── 📊 損益計算書 ────────────────────────────────────────────
@@ -238,6 +240,91 @@ else:
                         visualizer.facility_ranking_bar(analyzer.facility_annual_ranking(_result_demand_df)),
                         use_container_width=True,
                     )
+
+        # ── 📅 8パターン分析 ──────────────────────────────────────────
+        with tab_pattern8:
+            st.caption(
+                "この試算で使用した需要・供給データをもとに、季節（春夏秋冬）×平日/休日の組み合わせごとに、"
+                "同じ時間帯の実績を平均した「代表的な1日」の需給バランス（30分値）を比較します。"
+            )
+            if _result_demand_df is None or _result_demand_df.empty:
+                st.info("需要データがありません。")
+            else:
+                _p8_supply_df = _result_supply_df if _result_supply_df is not None else pd.DataFrame(
+                    columns=["datetime", "source_name", "supply_kwh"]
+                )
+                _p8_source_names = (
+                    sorted(_p8_supply_df["source_name"].unique().tolist()) if not _p8_supply_df.empty else []
+                )
+
+                _p8_demand_total = _result_demand_df.groupby("datetime", as_index=False)["consumption_kwh"].sum()
+                _p8_demand_total["season"] = analyzer.assign_season(_p8_demand_total["datetime"])
+                _p8_demand_total["day_type"] = analyzer.assign_day_type(_p8_demand_total["datetime"])
+                _p8_demand_total["hour"] = _p8_demand_total["datetime"].dt.hour
+                _p8_demand_total["minute"] = _p8_demand_total["datetime"].dt.minute
+
+                _p8_supply_work = _p8_supply_df.copy()
+                if not _p8_supply_work.empty:
+                    _p8_supply_work["season"] = analyzer.assign_season(_p8_supply_work["datetime"])
+                    _p8_supply_work["day_type"] = analyzer.assign_day_type(_p8_supply_work["datetime"])
+                    _p8_supply_work["hour"] = _p8_supply_work["datetime"].dt.hour
+                    _p8_supply_work["minute"] = _p8_supply_work["datetime"].dt.minute
+
+                _P8_SEASONS = ["春", "夏", "秋", "冬"]
+                _P8_DAY_TYPES = ["平日", "休日"]
+                _P8_BASE_DATE = pd.Timestamp("2000-01-01")
+
+                def _p8_representative_day(season: str, day_type: str) -> tuple[pd.DataFrame, pd.DataFrame, int]:
+                    """季節×平日/休日に該当する実績を時刻ごとに平均し、代表的な1日分のdemand/supplyを作る。"""
+                    d = _p8_demand_total[
+                        (_p8_demand_total["season"] == season) & (_p8_demand_total["day_type"] == day_type)
+                    ]
+                    n_days = d["datetime"].dt.date.nunique()
+
+                    d_rep = d.groupby(["hour", "minute"], as_index=False)["consumption_kwh"].mean()
+                    d_rep["datetime"] = (
+                        _P8_BASE_DATE + pd.to_timedelta(d_rep["hour"], unit="h") + pd.to_timedelta(d_rep["minute"], unit="m")
+                    )
+                    d_rep["facility_name"] = "代表日"
+                    d_rep = d_rep[["datetime", "facility_name", "consumption_kwh"]].sort_values("datetime").reset_index(drop=True)
+
+                    if _p8_supply_work.empty:
+                        s_rep = pd.DataFrame(columns=["datetime", "source_name", "supply_kwh"])
+                    else:
+                        s = _p8_supply_work[
+                            (_p8_supply_work["season"] == season) & (_p8_supply_work["day_type"] == day_type)
+                        ]
+                        s_rep = s.groupby(["source_name", "hour", "minute"], as_index=False)["supply_kwh"].mean()
+                        s_rep["datetime"] = (
+                            _P8_BASE_DATE + pd.to_timedelta(s_rep["hour"], unit="h") + pd.to_timedelta(s_rep["minute"], unit="m")
+                        )
+                        s_rep = s_rep[["datetime", "source_name", "supply_kwh"]].sort_values("datetime").reset_index(drop=True)
+
+                    return d_rep, s_rep, n_days
+
+                for _p8_season in _P8_SEASONS:
+                    st.markdown(f"#### {_p8_season}")
+                    _p8_cols = st.columns(2)
+                    for _p8_day_type, _p8_col in zip(_P8_DAY_TYPES, _p8_cols):
+                        _d_rep, _s_rep, _n_days = _p8_representative_day(_p8_season, _p8_day_type)
+                        with _p8_col:
+                            if _d_rep.empty or _d_rep["consumption_kwh"].isna().all():
+                                st.info(f"{_p8_season}・{_p8_day_type}：データがありません。")
+                                continue
+                            _p8_balance_df = financial_model.calc_balance(_d_rep, _s_rep)
+                            _p8_kpis = financial_model.calc_balance_kpis(_p8_balance_df)
+                            st.caption(f"{_p8_day_type}（{_n_days}日の平均）")
+                            _k1, _k2, _k3 = st.columns(3)
+                            _k1.metric("総需要", f"{_p8_kpis['total_demand_kwh']:,.0f} kWh")
+                            _k2.metric("自給率", f"{_p8_kpis['self_sufficiency_pct']:.1f} %")
+                            _k3.metric("不足", f"{_p8_kpis['deficit_kwh']:,.0f} kWh")
+                            _p8_fig = visualizer.supply_demand_balance_chart(
+                                _p8_balance_df, _p8_source_names,
+                                title=f"{_p8_season}・{_p8_day_type}の代表的な1日",
+                            )
+                            _p8_fig.update_xaxes(tickformat="%H:%M", title="時刻")
+                            st.plotly_chart(_p8_fig, use_container_width=True)
+                    st.markdown("---")
 
         # ── 🏢 施設別収支 ────────────────────────────────────────────
         with tab_facility:
