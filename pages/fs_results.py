@@ -6,6 +6,8 @@ pages/fs_results.py
 
 from __future__ import annotations
 
+import json
+
 import pandas as pd
 import streamlit as st
 
@@ -50,6 +52,26 @@ _sources = [supply_planner.SupplySource(**s) for s in st.session_state.get("supp
 
 fs_demand_df = common.render_period_selector(filtered_base, key_prefix="fs")
 
+
+def _result_fingerprint(demand_df: pd.DataFrame, design: dict) -> tuple:
+    """分析期間＋シナリオ設計の内容から、結果が最新かどうかを判定するための指紋を作る。"""
+    if demand_df.empty:
+        period_key = (0, None, None)
+    else:
+        period_key = (len(demand_df), str(demand_df["datetime"].min()), str(demand_df["datetime"].max()))
+    try:
+        design_key = json.dumps(design, sort_keys=True, default=str)
+    except Exception:
+        design_key = str(design)
+    return (period_key, design_key)
+
+
+if not fs_demand_df.empty:
+    st.caption(
+        f"対象期間: {fs_demand_df['datetime'].min().strftime('%Y/%m/%d')} 〜 "
+        f"{fs_demand_df['datetime'].max().strftime('%Y/%m/%d')}"
+    )
+
 if st.button("▶ 小売FS試算実行", type="primary", key="run_retail_fs"):
     if fs_demand_df.empty:
         st.warning("選択した分析期間にデータがありません。分析期間を変更してください。")
@@ -89,6 +111,7 @@ if st.button("▶ 小売FS試算実行", type="primary", key="run_retail_fs"):
                 st.session_state["retail_fs_result"] = result
                 st.session_state["fs_demand_df"] = fs_demand_df
                 st.session_state["fs_supply_df"] = fs_supply_df
+                st.session_state["fs_result_fingerprint"] = _result_fingerprint(fs_demand_df, fs_design)
 
                 _annual = result["annual"]
                 _other_revenue = _annual["basic_revenue"] + _annual["volumetric_revenue"] + _annual["fuel_adj_revenue"]
@@ -112,6 +135,13 @@ fs_result = st.session_state.get("retail_fs_result")
 if fs_result is None:
     st.info("設定を確認して「小売FS試算実行」を押してください。")
 else:
+    _current_fingerprint = _result_fingerprint(fs_demand_df, fs_design)
+    _stored_fingerprint = st.session_state.get("fs_result_fingerprint")
+    if _stored_fingerprint is not None and _current_fingerprint != _stored_fingerprint:
+        st.warning(
+            "⚠️ 分析期間または設定が変更されていますが、下記の結果はまだ変更前のものです。"
+            "「▶ 小売FS試算実行」を押して再計算してください。"
+        )
     try:
         _annual = fs_result["annual"]
         _monthly = fs_result["monthly"].copy()

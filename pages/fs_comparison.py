@@ -37,6 +37,17 @@ else:
         st.rerun()
 
     cmp_demand_df = common.render_period_selector(filtered_base, key_prefix="cmp")
+    if not cmp_demand_df.empty:
+        st.caption(
+            f"対象期間: {cmp_demand_df['datetime'].min().strftime('%Y/%m/%d')} 〜 "
+            f"{cmp_demand_df['datetime'].max().strftime('%Y/%m/%d')}"
+        )
+    _cmp_fingerprint = (
+        tuple(sorted(s.name for s in saved_scenarios)),
+        len(cmp_demand_df),
+        str(cmp_demand_df["datetime"].min()) if not cmp_demand_df.empty else None,
+        str(cmp_demand_df["datetime"].max()) if not cmp_demand_df.empty else None,
+    )
 
     if st.button("▶ 全シナリオを一括計算して比較", key="compare_scenarios_btn"):
         with st.spinner("全シナリオを計算中..."):
@@ -48,8 +59,14 @@ else:
                 except Exception as e:
                     st.error(f"シナリオ「{sc.name}」の計算でエラーが発生しました: {e}")
             st.session_state["scenario_summaries"] = summaries
+            st.session_state["scenario_summaries_fingerprint"] = _cmp_fingerprint
 
     summaries = st.session_state.get("scenario_summaries")
+    if summaries and st.session_state.get("scenario_summaries_fingerprint") != _cmp_fingerprint:
+        st.warning(
+            "⚠️ 比較対象期間または保存済みシナリオが変更されていますが、下記の結果はまだ変更前のものです。"
+            "「▶ 全シナリオを一括計算して比較」を押して再計算してください。"
+        )
     if summaries:
         st.plotly_chart(visualizer.scenario_comparison_chart(summaries), use_container_width=True)
         cmp_tbl = pd.DataFrame(summaries).T.rename(columns={
