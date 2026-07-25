@@ -103,7 +103,7 @@ def generate_supply_profile(
         * pd.Series(monthly_factors, dtype=float)
         * pd.Series(hourly_factors, dtype=float)
         * 0.5   # kW → kWh (30分)
-    ).values
+    ).to_numpy(copy=True)  # pandasのCopy-on-Write下では .values が読み取り専用になり得るため明示的にコピーする
 
     # 運転開始日より前はゼロ
     if source.start_date:
