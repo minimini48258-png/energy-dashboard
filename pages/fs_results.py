@@ -107,7 +107,7 @@ if st.button("▶ 小売FS試算実行", type="primary", key="run_retail_fs"):
                     jepx_actual_series=jepx_actual_series,
                     sga_items=fs_design.get("sga_items", {}),
                     corporate_tax_rate_pct=fs_design.get("corporate_tax_rate_pct", retail_fs.DEFAULT_CORPORATE_TAX_RATE_PCT),
-                    fip_indexed_sources=fs_design.get("fip_indexed_sources", {}),
+                    market_indexed_sources=fs_design.get("market_indexed_sources", {}),
                 )
                 st.session_state["retail_fs_result"] = result
                 st.session_state["fs_demand_df"] = fs_demand_df
@@ -122,7 +122,7 @@ if st.button("▶ 小売FS試算実行", type="primary", key="run_retail_fs"):
                     fs_design["reserve_margin_pct"],
                     base_gross_profit=_annual["gross_profit"],
                     other_revenue=_other_revenue, other_cost=_other_cost,
-                    fip_indexed_sources=fs_design.get("fip_indexed_sources", {}),
+                    market_indexed_sources=fs_design.get("market_indexed_sources", {}),
                 )
                 st.session_state["retail_fs_co2"] = retail_fs.calc_co2_and_local_ratio(
                     fs_balance_df, fs_supply_df, fs_design["emission_factors"], fs_design["local_flags"],
@@ -306,28 +306,29 @@ else:
                             },
                         )
 
-                _fip_detail = retail_fs.calc_fip_source_detail(
+                _market_indexed_detail = retail_fs.calc_market_indexed_source_detail(
                     _result_supply_df if _result_supply_df is not None else pd.DataFrame(
                         columns=["datetime", "source_name", "supply_kwh"]
                     ),
                     jepx_by_month_hour, fs_design.get("source_costs", {}),
-                    fip_indexed_sources=fs_design.get("fip_indexed_sources", {}),
+                    market_indexed_sources=fs_design.get("market_indexed_sources", {}),
                     jepx_actual_series=jepx_actual_series,
                 )
-                if not _fip_detail.empty:
-                    st.markdown("**JEPX価格連動電源（FIP買取等）の明細**")
+                if not _market_indexed_detail.empty:
+                    st.markdown("**JEPX価格連動電源（市場連動型契約）の明細**")
                     st.caption(
                         "登録した供給量の全量を「JEPX想定単価＋スプレッド」で買い取る前提のため、"
                         "自家消費しきれず余剰分をJEPX想定単価（スプレッドなし）で再売電すると、"
                         "その差額（スプレッド分）が電源1kWhあたりの目減りになります。"
+                        "（通常の相対電源・FIP転した電源からの買取は固定単価で設定するため、この明細には出てきません）"
                     )
-                    _fip_disp = _fip_detail.rename(columns={
+                    _market_disp = _market_indexed_detail.rename(columns={
                         "source_name": "電源名", "kwh": "供給量(kWh)",
                         "avg_jepx_price": "平均JEPX単価(円/kWh)", "spread": "スプレッド(円/kWh)",
                         "avg_unit_cost": "実効調達単価(円/kWh)", "total_cost": "総調達コスト(円)",
                     })
                     st.dataframe(
-                        _fip_disp.set_index("電源名"), use_container_width=True,
+                        _market_disp.set_index("電源名"), use_container_width=True,
                         column_config={
                             "供給量(kWh)": st.column_config.NumberColumn("供給量(kWh)", format="%,.0f"),
                             "平均JEPX単価(円/kWh)": st.column_config.NumberColumn("平均JEPX単価(円/kWh)", format="%.2f"),

@@ -109,7 +109,7 @@ def run_scenario(scenario: Scenario, demand_df: pd.DataFrame) -> dict:
         reserve_margin_pct=design.get("reserve_margin_pct", 3.0),
         sga_items=design.get("sga_items", {}),
         corporate_tax_rate_pct=design.get("corporate_tax_rate_pct", retail_fs.DEFAULT_CORPORATE_TAX_RATE_PCT),
-        fip_indexed_sources=design.get("fip_indexed_sources", {}),
+        market_indexed_sources=design.get("market_indexed_sources", {}),
     )
 
 

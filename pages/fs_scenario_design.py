@@ -350,38 +350,44 @@ source_costs: dict[str, float] = {}
 emission_factors: dict[str, float] = {}
 local_flags: dict[str, bool] = {}
 procurement_ratios: dict[str, float] = {}
-fip_indexed_sources: dict[str, bool] = {}
+market_indexed_sources: dict[str, bool] = {}
 with st.container(border=True):
     st.markdown("**⑥ 電源別 調達コスト・排出係数・地域内フラグ・調達比率**")
     st.caption(
         "相対電源（固定単価での相対契約）も「電源管理」で登録した電源として、ここで単価を設定できます。"
         "「調達比率」は、登録された発電量・供給実績のうち実際に調達する割合です（例: 相対電源の一部だけ契約する場合など）。"
-        "「JEPX価格連動」をONにすると、その電源の調達費を固定単価ではなく"
-        "「その時刻のJEPXスポット価格＋スプレッド」で計算します"
-        "（FIP転した小水力等の相対電源からの買取を想定：FIP発電事業者は市場価格連動で"
-        "国から補助（プレミアム）を受けるため、買取側もおおむね市場価格に連動した価格で"
-        "取引するのが一般的です ※要確認）。"
+        "**FIP転した相対電源からの買取は、通常この「発電コスト」欄に固定単価を入力してください** "
+        "（FIP発電事業者への補助金＝プレミアムは市場価格を参照して国が計算するものであり、"
+        "小売事業者が支払う買取価格自体は当事者間で自由に交渉されるため、JEPX価格に連動する"
+        "必然性はありません）。"
     )
+    with st.expander("市場連動型の調達契約を設定する場合（通常は不要）", expanded=False):
+        st.caption(
+            "ごく一部の契約形態として、買取価格そのものを「その時刻のJEPXスポット価格＋スプレッド」で"
+            "決める市場連動型の調達契約があります。該当する電源がある場合のみ、下の"
+            "「JEPX価格連動」をONにしてください。"
+        )
     _saved_source_costs = _saved.get("source_costs", {})
     _saved_emission_factors = _saved.get("emission_factors", {})
     _saved_local_flags = _saved.get("local_flags", {})
     _saved_procurement_ratios = _saved.get("procurement_ratios", {})
-    _saved_fip_flags = _saved.get("fip_indexed_sources", {})
+    _saved_market_indexed_flags = _saved.get("market_indexed_sources", {})
     if _all_src_names:
         for sn in _all_src_names:
             st.markdown(f"　**{sn}**")
             sc0, sc1, sc2, sc3, sc4 = st.columns([1.4, 1.6, 1, 1, 1.4])
-            _is_fip = sc0.checkbox(
-                "JEPX価格連動（FIP買取等）", value=_saved_fip_flags.get(sn, False), key=f"fs_fip_{sn}",
+            _is_market_indexed = sc0.checkbox(
+                "JEPX価格連動調達（市場連動型契約）",
+                value=_saved_market_indexed_flags.get(sn, False), key=f"fs_market_indexed_{sn}",
             )
-            fip_indexed_sources[sn] = _is_fip
-            _cost_label = "スプレッド(円/kWh)" if _is_fip else "発電コスト(円/kWh)"
+            market_indexed_sources[sn] = _is_market_indexed
+            _cost_label = "スプレッド(円/kWh)" if _is_market_indexed else "発電コスト(円/kWh)"
             _cost_help = (
                 "JEPXスポット価格に上乗せする金額（マイナスも可）。0円ならスポット価格そのままで買い取る想定。"
-                if _is_fip else None
+                if _is_market_indexed else None
             )
             source_costs[sn] = sc1.number_input(
-                _cost_label, min_value=-100.0 if _is_fip else 0.0,
+                _cost_label, min_value=-100.0 if _is_market_indexed else 0.0,
                 value=_saved_source_costs.get(sn, _src_default_cost[sn]),
                 step=0.5, key=f"fs_cost_{sn}", help=_cost_help,
             )
@@ -468,7 +474,7 @@ _fs_design = {
     "emission_factors": emission_factors,
     "local_flags": local_flags,
     "procurement_ratios": procurement_ratios,
-    "fip_indexed_sources": fip_indexed_sources,
+    "market_indexed_sources": market_indexed_sources,
     "sga_items": sga_items,
     "corporate_tax_rate_pct": tax_rate,
     "capital_yen": capital,

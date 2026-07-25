@@ -392,19 +392,20 @@ def calc_procurement_cost(
     jepx_price_by_month_hour: dict[tuple[int, int], float],
     reserve_margin_pct: float,
     jepx_actual_series: pd.Series | None = None,
-    fip_indexed_sources: dict[str, bool] | None = None,
+    market_indexed_sources: dict[str, bool] | None = None,
 ) -> pd.DataFrame:
     """
     30分コマ単位の電力調達費を計算する（月次に集約して返す）。
     電力調達費 = (自社電源コスト + JEPX残差調達費) × (1 + 予備費率)
 
-    jepx_actual_series  : 実績JEPX価格（datetime→円/kWh）。値がある30分コマは
-                           こちらを優先し、欠損コマは jepx_price_by_month_hour を使う
-    fip_indexed_sources : {電源名: True} の電源は、source_costs の値を固定単価ではなく
-                           「その時刻のJEPXスポット価格に上乗せするスプレッド（円/kWh）」として扱う
-                           （FIP転した相対電源からの買取などを想定）。
+    jepx_actual_series      : 実績JEPX価格（datetime→円/kWh）。値がある30分コマは
+                               こちらを優先し、欠損コマは jepx_price_by_month_hour を使う
+    market_indexed_sources  : {電源名: True} の電源は、source_costs の値を固定単価ではなく
+                               「その時刻のJEPXスポット価格に上乗せするスプレッド（円/kWh）」として扱う
+                               （市場価格に連動する特殊な調達契約向け。通常の相対電源・FIP転した
+                               電源からの買取は、当事者間で決める固定単価で設定するのが一般的）。
     """
-    fip_indexed_sources = fip_indexed_sources or {}
+    market_indexed_sources = market_indexed_sources or {}
     df = balance_df.copy()
     df["_cal_month"] = df["datetime"].dt.month
     df["hour"] = df["datetime"].dt.hour
@@ -418,22 +419,22 @@ def calc_procurement_cost(
 
     if not supply_df.empty and source_costs:
         _supply = supply_df.copy()
-        _fip_names = {name for name, is_fip in fip_indexed_sources.items() if is_fip}
-        _is_fip = _supply["source_name"].isin(_fip_names)
+        _mkt_names = {name for name, is_mkt in market_indexed_sources.items() if is_mkt}
+        _is_mkt = _supply["source_name"].isin(_mkt_names)
 
-        _flat = _supply[~_is_fip].copy()
+        _flat = _supply[~_is_mkt].copy()
         _flat["cost"] = _flat["source_name"].map(source_costs).fillna(0.0) * _flat["supply_kwh"]
 
-        _fip = _supply[_is_fip].copy()
-        if not _fip.empty:
+        _mkt = _supply[_is_mkt].copy()
+        if not _mkt.empty:
             _jepx_price_map = df.set_index("datetime")["jepx_price"]
-            _fip["jepx_price_at_ts"] = _fip["datetime"].map(_jepx_price_map).fillna(15.0)
-            _fip["spread"] = _fip["source_name"].map(source_costs).fillna(0.0)
-            _fip["cost"] = (_fip["jepx_price_at_ts"] + _fip["spread"]) * _fip["supply_kwh"]
+            _mkt["jepx_price_at_ts"] = _mkt["datetime"].map(_jepx_price_map).fillna(15.0)
+            _mkt["spread"] = _mkt["source_name"].map(source_costs).fillna(0.0)
+            _mkt["cost"] = (_mkt["jepx_price_at_ts"] + _mkt["spread"]) * _mkt["supply_kwh"]
         else:
-            _fip["cost"] = pd.Series(dtype=float)
+            _mkt["cost"] = pd.Series(dtype=float)
 
-        _combined = pd.concat([_flat[["datetime", "cost"]], _fip[["datetime", "cost"]]], ignore_index=True)
+        _combined = pd.concat([_flat[["datetime", "cost"]], _mkt[["datetime", "cost"]]], ignore_index=True)
         gen_cost = (
             _combined.groupby("datetime", as_index=False)["cost"].sum().rename(columns={"cost": "gen_cost"})
         )
@@ -500,23 +501,23 @@ def aggregate_jepx_market_detail(detail_df: pd.DataFrame, freq: str = "M") -> pd
     return agg.sort_values("period").reset_index(drop=True)
 
 
-def calc_fip_source_detail(
+def calc_market_indexed_source_detail(
     supply_df: pd.DataFrame,
     jepx_price_by_month_hour: dict[tuple[int, int], float],
     source_costs: dict[str, float],
-    fip_indexed_sources: dict[str, bool] | None = None,
+    market_indexed_sources: dict[str, bool] | None = None,
     jepx_actual_series: pd.Series | None = None,
 ) -> pd.DataFrame:
     """
-    JEPX価格連動（FIP買取等）の電源ごとに、供給量・平均JEPX価格・スプレッド・
+    JEPX価格連動（市場連動型契約）の電源ごとに、供給量・平均JEPX価格・スプレッド・
     実効調達単価・総調達コストを算出する。
     """
     _cols = ["source_name", "kwh", "avg_jepx_price", "spread", "avg_unit_cost", "total_cost"]
-    fip_names = {n for n, v in (fip_indexed_sources or {}).items() if v}
-    if supply_df.empty or not fip_names:
+    _mkt_names = {n for n, v in (market_indexed_sources or {}).items() if v}
+    if supply_df.empty or not _mkt_names:
         return pd.DataFrame(columns=_cols)
 
-    _s = supply_df[supply_df["source_name"].isin(fip_names)].copy()
+    _s = supply_df[supply_df["source_name"].isin(_mkt_names)].copy()
     if _s.empty:
         return pd.DataFrame(columns=_cols)
 
@@ -566,7 +567,7 @@ def run_fs(
     jepx_actual_series: pd.Series | None = None,
     sga_items: dict[str, float] | None = None,
     corporate_tax_rate_pct: float = DEFAULT_CORPORATE_TAX_RATE_PCT,
-    fip_indexed_sources: dict[str, bool] | None = None,
+    market_indexed_sources: dict[str, bool] | None = None,
 ) -> dict:
     """
     小売FSの一括試算。月別・年間サマリーの損益計算書ふうの結果を返す。
@@ -576,10 +577,11 @@ def run_fs(
     法人税等 = max(営業利益, 0) × 実効税率（簡易計算。赤字時は0円、繰越欠損金等は考慮しない）
     当期純利益 = 営業利益 - 法人税等
 
-    sga_items            : 販管費の費目別年額（円）。例: {"人件費": ..., "システム費": ..., "委託費": ..., "家賃": ...}
-    corporate_tax_rate_pct: 法人税等の実効税率（%）※要確認・簡易計算
-    fip_indexed_sources   : {電源名: True} の電源は、source_costs をJEPX価格へのスプレッドとして扱う
-                             （FIP転した相対電源の買取などを想定）
+    sga_items              : 販管費の費目別年額（円）。例: {"人件費": ..., "システム費": ..., "委託費": ..., "家賃": ...}
+    corporate_tax_rate_pct : 法人税等の実効税率（%）※要確認・簡易計算
+    market_indexed_sources : {電源名: True} の電源は、source_costs をJEPX価格へのスプレッドとして扱う
+                              （市場価格に連動する特殊な調達契約向け。通常の相対電源・FIP転した
+                              電源からの買取は固定単価で設定するのが一般的）
     """
     revenue_df = calc_facility_revenue(
         demand_df, facility_configs, tariff_plans,
@@ -588,7 +590,7 @@ def run_fs(
     transmission_df = calc_transmission_cost(demand_df, facility_configs, transmission_rates)
     procurement_df = calc_procurement_cost(
         balance_df, supply_df, source_costs, jepx_price_by_month_hour, reserve_margin_pct,
-        jepx_actual_series=jepx_actual_series, fip_indexed_sources=fip_indexed_sources,
+        jepx_actual_series=jepx_actual_series, market_indexed_sources=market_indexed_sources,
     )
 
     n_months = max(procurement_df["month"].nunique(), 1) if not procurement_df.empty else 1
@@ -760,13 +762,13 @@ def sensitivity_jepx_shift(
     other_revenue: float,
     other_cost: float,
     shifts: list[float] | None = None,
-    fip_indexed_sources: dict[str, bool] | None = None,
+    market_indexed_sources: dict[str, bool] | None = None,
 ) -> pd.DataFrame:
     """
     JEPX価格を一律 ±shift 円/kWh 動かした場合の売上総利益（粗利益）の変化を試算する。
     other_revenue = 基本+従量+燃調 の合計（levy は相殺されるため除く）
     other_cost     = 託送料金 + 容量拠出金
-    JEPX価格連動電源（fip_indexed_sources）の調達費も、価格シフトに応じて自動的に変動する。
+    JEPX価格連動電源（market_indexed_sources）の調達費も、価格シフトに応じて自動的に変動する。
     """
     shifts = shifts if shifts is not None else [-5, -3, -1, 0, 1, 3, 5]
     rows = []
@@ -774,7 +776,7 @@ def sensitivity_jepx_shift(
         shifted_prices = {k: max(p + shift, 0.0) for k, p in jepx_price_by_month_hour.items()}
         proc = calc_procurement_cost(
             balance_df, supply_df, source_costs, shifted_prices, reserve_margin_pct,
-            fip_indexed_sources=fip_indexed_sources,
+            market_indexed_sources=market_indexed_sources,
         )
         procurement_cost = float(proc["procurement_cost"].sum())
         market_sale = float(proc["market_sale_revenue"].sum())
