@@ -618,7 +618,8 @@ def calc_cash_flow(
     （利用料回収のタイムラグ）。費用側（電力調達費・託送料金・容量拠出金・販管費・
     再エネ賦課金納付・法人税等）は発生月に支払われるものとする（簡易モデル・※要確認）。
     減価償却・設備投資・売掛金以外の運転資本の変動は考慮しない。
-    現金残高 = 資本金 + 月次キャッシュフローの累積。
+    現金残高は資本金からスタートする：1ヶ月目の期首残高＝資本金、
+    期末残高＝期首残高＋当月キャッシュフロー、翌月の期首残高＝前月の期末残高。
     """
     cf = monthly_df[
         ["month", "sales_revenue", "levy_revenue", "cost_of_sales", "sga_cost", "corporate_tax"]
@@ -627,9 +628,11 @@ def calc_cash_flow(
     cf["cash_in"] = cf["sales_revenue"].shift(revenue_collection_lag_months).fillna(0.0)
     cf["cash_out"] = cf["cost_of_sales"] + cf["levy_revenue"] + cf["sga_cost"] + cf["corporate_tax"]
     cf["net_cash_flow"] = cf["cash_in"] - cf["cash_out"]
-    cf["cash_balance"] = capital_yen + cf["net_cash_flow"].cumsum()
+    cf["opening_balance"] = capital_yen + cf["net_cash_flow"].cumsum().shift(1).fillna(0.0)
+    cf["closing_balance"] = cf["opening_balance"] + cf["net_cash_flow"]
+    cf["cash_balance"] = cf["closing_balance"]  # 既存呼び出し元との互換用（期末残高と同じ）
 
-    return cf[["month", "cash_in", "cash_out", "net_cash_flow", "cash_balance"]]
+    return cf[["month", "cash_in", "cash_out", "net_cash_flow", "opening_balance", "closing_balance", "cash_balance"]]
 
 
 def sensitivity_jepx_shift(

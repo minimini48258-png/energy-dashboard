@@ -403,13 +403,13 @@ else:
                 f"簡易モデル：売上代金の入金は発生月から{collection_lag_months}ヶ月遅れると仮定しています"
                 "（「シナリオ設計」⑧で変更可）。費用（電力調達費・託送料金・容量拠出金・販管費・法人税等）"
                 "は発生月に支払われるものとして扱い、減価償却・設備投資は考慮しません。"
-                "現金残高＝資本金＋月次キャッシュフローの累積。"
+                "現金残高は資本金からスタートし、月初残高＋当月キャッシュフロー＝月末残高（翌月の月初残高）として推移します。"
             )
             _cf = retail_fs.calc_cash_flow(_monthly, capital_yen, revenue_collection_lag_months=collection_lag_months)
             cf1, cf2, cf3 = st.columns(3)
-            cf1.metric("資本金（期首現金残高）", f"{capital_yen/10000:,.0f} 万円")
-            cf2.metric("期末現金残高", f"{_cf['cash_balance'].iloc[-1]/10000:,.0f} 万円" if not _cf.empty else "—")
-            _min_balance = _cf["cash_balance"].min() if not _cf.empty else 0.0
+            cf1.metric("資本金（開始時点の現金残高）", f"{capital_yen/10000:,.0f} 万円")
+            cf2.metric("期末現金残高", f"{_cf['closing_balance'].iloc[-1]/10000:,.0f} 万円" if not _cf.empty else "—")
+            _min_balance = min(_cf["closing_balance"].min(), capital_yen) if not _cf.empty else capital_yen
             cf3.metric("期間中の最低残高", f"{_min_balance/10000:,.0f} 万円")
             if _min_balance < 0:
                 st.warning("⚠️ 期間中に現金残高がマイナスになる月があります。資本金の増額や資金調達を検討してください。")
@@ -419,9 +419,11 @@ else:
                 with st.expander("月別キャッシュフロー・テーブル"):
                     _cf_tbl = _cf.copy()
                     _cf_tbl["month"] = _cf_tbl["month"].dt.strftime("%Y-%m")
+                    _cf_tbl = _cf_tbl[["month", "cash_in", "cash_out", "net_cash_flow", "opening_balance", "closing_balance"]]
                     _cf_tbl = _cf_tbl.rename(columns={
                         "month": "月", "cash_in": "入金(円)", "cash_out": "出金(円)",
-                        "net_cash_flow": "月次キャッシュフロー(円)", "cash_balance": "現金残高(円)",
+                        "net_cash_flow": "月次キャッシュフロー(円)",
+                        "opening_balance": "月初残高(円)", "closing_balance": "月末残高(円)",
                     }).set_index("月")
                     st.dataframe(
                         _cf_tbl, use_container_width=True,

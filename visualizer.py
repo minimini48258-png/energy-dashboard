@@ -739,7 +739,7 @@ def cash_flow_chart(
     cashflow_df: pd.DataFrame,
     title: str = "月次キャッシュフロー",
 ) -> go.Figure:
-    """入金（棒・正）／出金（棒・負）＋現金残高（累計・折れ線）。"""
+    """入金（棒・正）／出金（棒・負）＋現金残高（折れ線、資本金からスタート）。"""
     df = cashflow_df.copy()
     df["month_str"] = _month_labels(df["month"])
     scale = 1_000  # 円 → 千円
@@ -759,8 +759,16 @@ def cash_flow_chart(
             x=df["month_str"], y=df["net_cash_flow"] / scale, name="月次キャッシュフロー",
             marker_color=[FS_PROFIT_COLOR if v >= 0 else FS_COST_COLOR for v in df["net_cash_flow"]],
         ))
+
+    # 現金残高の折れ線は「資本金投入時点」を起点に、各月の期末残高へとつなぐ
+    if "opening_balance" in df.columns and not df.empty:
+        _balance_x = ["資本金"] + df["month_str"].tolist()
+        _balance_y = [df["opening_balance"].iloc[0] / scale] + (df["cash_balance"] / scale).tolist()
+    else:
+        _balance_x = df["month_str"].tolist()
+        _balance_y = (df["cash_balance"] / scale).tolist()
     fig.add_trace(go.Scatter(
-        x=df["month_str"], y=df["cash_balance"] / scale, name="現金残高（累計）",
+        x=_balance_x, y=_balance_y, name="現金残高",
         line=dict(color=_FS_TITLE_COLOR, width=3), mode="lines+markers", marker=dict(size=6),
     ))
     fig.update_layout(
