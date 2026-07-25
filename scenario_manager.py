@@ -10,11 +10,13 @@ import json
 from dataclasses import asdict, dataclass, field
 from datetime import datetime
 from pathlib import Path
+from typing import Optional
 
 import pandas as pd
 
 import financial_model
 import retail_fs
+import supply_cache_manager
 import supply_planner
 
 SCENARIOS_FILE = Path("/tmp/energy_dashboard/scenarios.json")
@@ -24,7 +26,9 @@ SCENARIOS_FILE = Path("/tmp/energy_dashboard/scenarios.json")
 class Scenario:
     name: str
     fs_design: dict = field(default_factory=dict)      # pages/fs_scenario_design.py が組み立てる設計一式
-    supply_sources: list = field(default_factory=list)  # list[asdict(SupplySource)]
+    supply_sources: list = field(default_factory=list)  # list[asdict(SupplySource)]（電源管理のパラメータ設定電源）
+    supply_data_cache_id: Optional[str] = None          # アップロード済み供給データのキャッシュID（supply_cache_manager）
+    selected_supply_names: list = field(default_factory=list)  # キャッシュ供給データのうち使用する電源名
     created_at: str = field(default_factory=lambda: datetime.now().isoformat(timespec="seconds"))
 
 
@@ -73,7 +77,20 @@ def run_scenario(scenario: Scenario, demand_df: pd.DataFrame) -> dict:
 
     sources = [supply_planner.SupplySource(**s) for s in scenario.supply_sources]
     ts = pd.DatetimeIndex(demand_df["datetime"].sort_values().unique())
-    supply_df = supply_planner.combine_supply_profiles(sources, ts)
+    supply_parts = [supply_planner.combine_supply_profiles(sources, ts)]
+
+    if scenario.supply_data_cache_id:
+        try:
+            uploaded_df = supply_cache_manager.load(scenario.supply_data_cache_id)
+            if scenario.selected_supply_names:
+                uploaded_df = uploaded_df[uploaded_df["source_name"].isin(scenario.selected_supply_names)]
+            supply_parts.append(uploaded_df)
+        except Exception:
+            pass  # 保存済み供給データが見つからない場合はパラメータ設定電源のみで計算を続行
+
+    supply_df = pd.concat(supply_parts, ignore_index=True) if supply_parts else pd.DataFrame(
+        columns=["datetime", "source_name", "supply_kwh"]
+    )
     supply_df = supply_planner.apply_procurement_ratios(supply_df, design.get("procurement_ratios", {}))
     balance_df = financial_model.calc_balance(demand_df, supply_df)
 

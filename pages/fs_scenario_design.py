@@ -17,6 +17,7 @@ import financial_model
 import jepx_loader
 import retail_fs
 import scenario_manager
+import supply_cache_manager
 import supply_planner
 
 st.title("📝 小売FS：シナリオ設計")
@@ -447,6 +448,7 @@ st.markdown("**シナリオとして保存**")
 st.caption(
     "名前を付けて保存すると「シナリオ比較」ページで他のシナリオと比較できます"
     "（① 料金プラン・② 施設設定は既にそれぞれ個別に保存済みで、直近の編集内容は自動的に下書き保存されています）。"
+    "アップロード済みの供給データがある場合は、その内容もシナリオと一緒に保存されます。"
 )
 _name_col, _save_col = st.columns([3, 1])
 _scenario_name = _name_col.text_input("シナリオ名", key="fs_scenario_name", placeholder="例: 標準シナリオ")
@@ -454,10 +456,20 @@ if _save_col.button("💾 シナリオを保存", type="primary", key="fs_design
     if not _scenario_name:
         st.error("シナリオ名を入力してください。")
     else:
+        _supply_cache_id = None
+        if _uploaded is not None and not _uploaded.empty:
+            try:
+                _supply_cache_id = supply_cache_manager.save(
+                    _uploaded, st.session_state.get("supply_filenames", [])
+                )
+            except Exception as _supply_save_err:
+                st.warning(f"供給データの保存に失敗しました（電源管理の設定のみでシナリオを保存します）: {_supply_save_err}")
         _scenario = scenario_manager.Scenario(
             name=_scenario_name,
             fs_design=_fs_design,
             supply_sources=st.session_state.get("supply_sources", []),
+            supply_data_cache_id=_supply_cache_id,
+            selected_supply_names=st.session_state.get("selected_supply_names", []),
         )
         scenario_manager.save_scenario(_scenario)
         st.success(f"✅ シナリオ「{_scenario_name}」を保存しました。「シナリオ比較」ページで比較できます。")
