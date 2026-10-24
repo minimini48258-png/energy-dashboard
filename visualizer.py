@@ -909,7 +909,10 @@ def _ppa_layout(fig: go.Figure, title: str, yaxis_title: str) -> go.Figure:
         template="plotly_white",
         title=dict(text=title, font=dict(size=18, color=_FS_TITLE_COLOR)),
         xaxis=dict(title="年目"),
-        yaxis=dict(title=yaxis_title),
+        # rangemode="tozero": Y軸の可視範囲に必ず0を含める。これが無いとPlotlyはデータの
+        # 最小〜最大だけでY軸をズームしてしまい、例えば発電量が20年で6%しか減っていなくても
+        # グラフの下端＝0のように見えてしまう（実際には0ではないのに0に見える誤解を防ぐ）。
+        yaxis=dict(title=yaxis_title, rangemode="tozero"),
         hovermode="x unified",
         margin=dict(l=20, r=20, t=60, b=40),
         legend=dict(orientation="h", yanchor="bottom", y=1.02, xanchor="right", x=1),

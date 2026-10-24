@@ -17,6 +17,7 @@ import data_loader
 import grouping
 import supply_cache_manager
 import supply_loader
+import supply_planner
 
 st.title("📂 データ読み込み")
 
@@ -222,6 +223,43 @@ elif st.session_state["supply_df"] is not None and st.session_state["loaded_supp
     st.session_state["supply_filenames"] = []
     st.session_state["loaded_supply_file_ids"] = set()
     st.session_state["selected_supply_names"] = []
+
+if st.button("🔬 サンプル供給データ（メガソーラー300kW＋小水力200kW）で試す"):
+    if st.session_state.get("df") is not None:
+        _ts_min = st.session_state["df"]["datetime"].min()
+        _ts_max = st.session_state["df"]["datetime"].max()
+    else:
+        _ts_min, _ts_max = pd.Timestamp("2024-04-01"), pd.Timestamp("2025-03-31 23:30")
+    _sample_timestamps = pd.date_range(_ts_min, _ts_max, freq="30min")
+    _sample_sources = [
+        supply_planner.SupplySource(
+            name="メガソーラー",
+            source_type="solar",
+            capacity_kw=300.0,
+            monthly_utilization_pct=supply_planner.DEFAULT_MONTHLY_UTILIZATION_BY_TYPE["solar"],
+            hourly_pattern_pct=supply_planner.HOURLY_PRESETS["太陽光（晴天日カーブ・6〜18時）"],
+            cost_per_kwh=10.0,
+        ),
+        supply_planner.SupplySource(
+            name="小水力発電所",
+            source_type="hydro",
+            capacity_kw=200.0,
+            monthly_utilization_pct=supply_planner.DEFAULT_MONTHLY_UTILIZATION_BY_TYPE["hydro"],
+            hourly_pattern_pct=supply_planner.HOURLY_PRESETS["小水力（終日安定出力）"],
+            cost_per_kwh=12.0,
+        ),
+    ]
+    _sample_supply_df = supply_planner.combine_supply_profiles(_sample_sources, _sample_timestamps)
+    st.session_state["supply_df"] = _sample_supply_df
+    st.session_state["supply_filenames"] = ["サンプル供給データ（メガソーラー300kW＋小水力200kW）"]
+    st.session_state["loaded_supply_file_ids"] = set()
+    st.session_state["selected_supply_names"] = sorted(_sample_supply_df["source_name"].unique().tolist())
+    st.rerun()
+st.caption(
+    "需要データが読み込まれていれば、その期間に合わせて生成します"
+    "（未読み込みの場合は2024/04/01〜2025/03/31の期間で生成）。"
+    "稼働率・時間帯カーブは「電源管理」ページの初期値目安（※要確認）と同じものを使用しています。"
+)
 
 if st.session_state["supply_df"] is not None:
     _sdf = st.session_state["supply_df"]
