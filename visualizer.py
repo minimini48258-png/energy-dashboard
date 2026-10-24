@@ -5,7 +5,7 @@ Plotly を使ってグラフを生成する関数群。
 
 from __future__ import annotations
 
-__version__ = "1.3.0"  # supply_demand_balance_chart, monthly_pnl_chart, scenario_comparison_chart, hourly_pattern_bar, retail_fs_sensitivity_chart
+__version__ = "1.4.0"  # + ppa_cashflow_chart, ppa_cumulative_cf_chart, ppa_energy_mix_chart, ppa_loan_balance_chart, ppa_customer_compare_chart, ppa_sensitivity_tornado_chart
 
 import plotly.express as px
 import plotly.graph_objects as go
@@ -896,5 +896,96 @@ def jepx_volume_chart(
         hovermode="x unified",
         margin=dict(l=20, r=20, t=60, b=40),
         legend=dict(orientation="h", yanchor="bottom", y=1.02, xanchor="right", x=1),
+    )
+    return fig
+
+
+# ---------------------------------------------------------------------------
+# PPA採算性シミュレーター（ppa_retail_calc.py）向けグラフ
+# ---------------------------------------------------------------------------
+
+def _ppa_layout(fig: go.Figure, title: str, yaxis_title: str) -> go.Figure:
+    fig.update_layout(
+        template="plotly_white",
+        title=dict(text=title, font=dict(size=18, color=_FS_TITLE_COLOR)),
+        xaxis=dict(title="年目"),
+        yaxis=dict(title=yaxis_title),
+        hovermode="x unified",
+        margin=dict(l=20, r=20, t=60, b=40),
+        legend=dict(orientation="h", yanchor="bottom", y=1.02, xanchor="right", x=1),
+    )
+    return fig
+
+
+def ppa_cashflow_chart(yearly: list, title: str = "年間キャッシュフロー") -> go.Figure:
+    """EBITDA相当・元利返済後CFの年次棒グラフ。"""
+    years = [y.year for y in yearly]
+    fig = go.Figure()
+    fig.add_trace(go.Bar(x=years, y=[y.ebitda for y in yearly], name="EBITDA相当", marker_color=FS_PROFIT_COLOR))
+    fig.add_trace(go.Bar(x=years, y=[y.cf_after_debt for y in yearly], name="元利返済後CF", marker_color=_FS_TITLE_COLOR))
+    fig.update_layout(barmode="group")
+    return _ppa_layout(fig, title, "円")
+
+
+def ppa_cumulative_cf_chart(yearly: list, title: str = "累積キャッシュフロー") -> go.Figure:
+    years = [y.year for y in yearly]
+    fig = go.Figure()
+    fig.add_trace(go.Scatter(
+        x=years, y=[y.cumulative_cf_after_debt for y in yearly], name="累積CF",
+        mode="lines", fill="tozeroy", line=dict(color="#7c3aed", width=2),
+    ))
+    return _ppa_layout(fig, title, "円")
+
+
+def ppa_generation_chart(yearly: list, title: str = "年間発電量") -> go.Figure:
+    years = [y.year for y in yearly]
+    fig = go.Figure()
+    fig.add_trace(go.Scatter(
+        x=years, y=[y.generation_kwh for y in yearly], name="発電量",
+        mode="lines", line=dict(color=SUPPLY_COLORS.get("太陽光", "#F4D03F"), width=3),
+    ))
+    return _ppa_layout(fig, title, "kWh")
+
+
+def ppa_energy_mix_chart(yearly: list, title: str = "自家消費／余剰電力／外部調達電力") -> go.Figure:
+    years = [y.year for y in yearly]
+    fig = go.Figure()
+    fig.add_trace(go.Bar(x=years, y=[y.self_consumed_kwh for y in yearly], name="自家消費", marker_color=FS_PROFIT_COLOR))
+    fig.add_trace(go.Bar(x=years, y=[y.surplus_kwh for y in yearly], name="余剰電力", marker_color="#f59e0b"))
+    fig.add_trace(go.Bar(x=years, y=[y.external_procurement_kwh for y in yearly], name="外部調達", marker_color=FS_COST_COLOR))
+    fig.update_layout(barmode="stack")
+    return _ppa_layout(fig, title, "kWh")
+
+
+def ppa_loan_balance_chart(yearly: list, title: str = "借入残高") -> go.Figure:
+    years = [y.year for y in yearly]
+    fig = go.Figure()
+    fig.add_trace(go.Scatter(
+        x=years, y=[y.loan_balance_end for y in yearly], name="借入残高",
+        mode="lines", line=dict(color=FS_COST_COLOR, width=2),
+    ))
+    return _ppa_layout(fig, title, "円")
+
+
+def ppa_customer_compare_chart(yearly: list, title: str = "顧客の電気代比較（現在 vs 新プラン）") -> go.Figure:
+    years = [y.year for y in yearly]
+    fig = go.Figure()
+    fig.add_trace(go.Bar(x=years, y=[y.customer_current_cost for y in yearly], name="現在プラン", marker_color="#94a3b8"))
+    fig.add_trace(go.Bar(x=years, y=[y.customer_new_cost for y in yearly], name="新プラン", marker_color=_FS_TITLE_COLOR))
+    fig.update_layout(barmode="group")
+    return _ppa_layout(fig, title, "円")
+
+
+def ppa_sensitivity_tornado_chart(ranking: list[dict], title: str = "影響度ランキング（NPV変化幅）") -> go.Figure:
+    """rank_sensitivity_impact()の結果を横棒グラフ（トルネード図）で表示する。"""
+    labels = [r["label"] for r in ranking][::-1]
+    values = [r["npv_range"] for r in ranking][::-1]
+    fig = go.Figure(go.Bar(x=values, y=labels, orientation="h", marker_color=_FS_TITLE_COLOR))
+    fig.update_layout(
+        template="plotly_white",
+        title=dict(text=title, font=dict(size=18, color=_FS_TITLE_COLOR)),
+        xaxis=dict(title="NPV(事業)の変化幅（円）"),
+        margin=dict(l=20, r=20, t=60, b=40),
+        height=max(260, len(labels) * 36),
     )
     return fig

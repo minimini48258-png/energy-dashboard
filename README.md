@@ -23,6 +23,12 @@
   - 損益計算書ふうの月別・年間サマリー、JEPX価格の感度分析、CO2排出量・地産電源比率
   - 「電力小売FS 収支試算ツール」の計算ロジック（売上総利益 = 売上高 − 再エネ賦課金 −
     (電力調達費＋託送料金＋容量拠出金)）に準拠した簡易版
+- **PPA採算性シミュレーター**：「小売電気＋オンサイトPPA一体単価」事業の採算性検証
+  - 顧客条件・太陽光条件・小売電力条件・維持管理・ファイナンス・リスクを設定し、
+    顧客メリット／事業者メリット（事業IRR・エクイティIRR・NPV）／金融成立性（DSCR）を試算
+  - 損益分岐PPA単価の逆算（NPV=0／事業IRR目標／エクイティIRR目標／最低DSCR目標の4条件）
+  - 主要11変数の感度分析、シナリオ保存・比較
+  - 計算式・設計方針の詳細は `README_ppa.md` を参照
 
 ## 対応データ形式
 
@@ -67,6 +73,8 @@ energy-dashboard/
 ├── financial_model.py  # 簡易収支シミュレーション（小売単価一律）
 ├── retail_fs.py        # 小売FS：料金プラン・託送・容量拠出金・CO2の詳細計算
 ├── supply_planner.py   # 電源登録・供給プロファイル生成
+├── ppa_retail_calc.py  # PPA採算性：計算エンジン（詳細は README_ppa.md）
+├── ppa_scenario_manager.py  # PPA採算性：シナリオ保存・読込・比較実行
 ├── generate_sample.py  # サンプルデータ生成
 ├── requirements.txt
 └── data/sample/        # サンプルデータ（.gitignoreでExcel除外）

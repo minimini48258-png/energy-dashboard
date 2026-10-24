@@ -51,6 +51,7 @@ _DEFAULTS: dict = {
     "ppa_sim_mode": "basic",
     "ppa_sweep_df": None,
     "ppa_rec_kwh": 0,
+    "ppa_fs_inputs": None,         # PPA採算性シミュレーター：ppa_retail_calc.SimulationInputs一式（dict）
 }
 for _k, _v in _DEFAULTS.items():
     if _k not in st.session_state:
@@ -138,6 +139,11 @@ pg = st.navigation({
         st.Page("pages/fs_scenario_design.py", title="シナリオ設計", icon="📝"),
         st.Page("pages/fs_results.py", title="試算結果", icon="📊"),
         st.Page("pages/fs_comparison.py", title="シナリオ比較", icon="🔀"),
+    ],
+    "💰 PPA採算性": [
+        st.Page("pages/ppa_fs_design.py", title="シナリオ設計", icon="📝"),
+        st.Page("pages/ppa_fs_results.py", title="試算結果", icon="📊"),
+        st.Page("pages/ppa_fs_comparison.py", title="シナリオ比較", icon="🔀"),
     ],
 })
 pg.run()
