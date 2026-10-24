@@ -11,8 +11,10 @@ import io
 import pandas as pd
 import streamlit as st
 
+import analyzer
+import common
 import ppa_retail_calc as calc
-import ppa_scenario_manager
+import solar_simulator
 import visualizer
 
 st.title("📊 PPA採算性：試算結果")
@@ -97,7 +99,9 @@ with st.container(border=True):
 
 st.markdown("---")
 
-tab_summary, tab_detail, tab_sensitivity = st.tabs(["📈 グラフ・サマリー", "📋 年次詳細", "🔬 感度分析"])
+tab_summary, tab_balance, tab_pattern8, tab_detail, tab_sensitivity = st.tabs(
+    ["📈 グラフ・サマリー", "⚡ 需給バランス", "📅 8パターン分析", "📋 年次詳細", "🔬 感度分析"]
+)
 
 with tab_summary:
     g1, g2 = st.columns(2)
@@ -109,6 +113,95 @@ with tab_summary:
     g5, g6 = st.columns(2)
     g5.plotly_chart(visualizer.ppa_loan_balance_chart(yearly), use_container_width=True)
     g6.plotly_chart(visualizer.ppa_customer_compare_chart(yearly), use_container_width=True)
+
+with tab_balance:
+    sim_df = st.session_state.get("ppa_fs_sim_df")
+    if sim_df is None or sim_df.empty:
+        st.info(
+            "「シナリオ設計」ページで実需要データを使って自家消費率を計算すると、"
+            "ここで1日・1週間などの単位での需給バランス（実績の30分値）を確認できます。"
+            "現在は仮定値モードのため、年間の自家消費率(%)のみを使って計算しています。"
+        )
+    else:
+        st.caption(
+            "太陽光発電がこの顧客の需要をどれだけ賄い、どれだけ余剰電力（→小売電気事業者が買い取り、"
+            "他の需要家への供給電源として活用）が出て、どれだけ系統（市場等）からの調達が必要かを、"
+            "実績の30分値データで確認できます。"
+        )
+        bal_start, bal_end, _bal_period = common.render_flexible_period(
+            sim_df, key_prefix="ppa_balance",
+            options=["1日", "1週間", "1か月", "3か月", "全データ期間"], default_index=1,
+        )
+        bal_df = analyzer.filter_by_period(sim_df, bal_start, bal_end)
+        if bal_df.empty:
+            st.warning("選択した期間にデータがありません。")
+        else:
+            bal_kpis = solar_simulator.calc_kpis(bal_df)
+            bk1, bk2, bk3, bk4 = st.columns(4)
+            bk1.metric("需要量", f"{bal_kpis['total_demand_kwh']:,.0f} kWh")
+            bk2.metric("太陽光発電量", f"{bal_kpis['total_solar_kwh']:,.0f} kWh")
+            bk3.metric("自給率", f"{bal_kpis['self_sufficiency_rate']:.1f} %")
+            bk4.metric("外部調達(系統)", f"{bal_kpis['total_grid_import_kwh']:,.0f} kWh")
+            bk5, bk6 = st.columns(2)
+            bk5.metric("余剰電力(売電・他需要家供給用)", f"{bal_kpis['total_grid_export_kwh']:,.0f} kWh")
+            bk6.metric("自家消費率(発電量に対して)", f"{bal_kpis['self_consumption_rate']:.1f} %")
+            st.plotly_chart(visualizer.solar_supply_chart(bal_df, title=f"需給バランス（{_bal_period}）"), use_container_width=True)
+
+with tab_pattern8:
+    sim_df = st.session_state.get("ppa_fs_sim_df")
+    if sim_df is None or sim_df.empty:
+        st.info(
+            "「シナリオ設計」ページで実需要データを使って自家消費率を計算すると、"
+            "季節（春夏秋冬）×平日/休日の8パターンで代表的な1日の需給バランスを確認できます。"
+        )
+    else:
+        st.caption(
+            "実績データをもとに、季節×平日/休日の組み合わせごとに、同じ時間帯の実績を平均した"
+            "「代表的な1日」の需給バランス（30分値）を比較します。"
+        )
+        _p8 = sim_df.copy()
+        _p8["season"] = analyzer.assign_season(_p8["datetime"])
+        _p8["day_type"] = analyzer.assign_day_type(_p8["datetime"])
+        _p8["hour"] = _p8["datetime"].dt.hour
+        _p8["minute"] = _p8["datetime"].dt.minute
+
+        _P8_SEASONS = ["春", "夏", "秋", "冬"]
+        _P8_DAY_TYPES = ["平日", "休日"]
+        _P8_COLS = [
+            "demand_kwh", "solar_kwh", "direct_use_kwh",
+            "battery_charge_kwh", "battery_discharge_kwh", "grid_import_kwh", "grid_export_kwh",
+        ]
+        _P8_BASE_DATE = pd.Timestamp("2000-01-01")
+
+        def _p8_representative_day(season: str, day_type: str) -> tuple[pd.DataFrame, int]:
+            sub = _p8[(_p8["season"] == season) & (_p8["day_type"] == day_type)]
+            n_days = sub["datetime"].dt.date.nunique()
+            rep = sub.groupby(["hour", "minute"], as_index=False)[_P8_COLS].mean()
+            rep["datetime"] = (
+                _P8_BASE_DATE + pd.to_timedelta(rep["hour"], unit="h") + pd.to_timedelta(rep["minute"], unit="m")
+            )
+            rep = rep.sort_values("datetime").reset_index(drop=True)
+            return rep, n_days
+
+        for _season in _P8_SEASONS:
+            st.markdown(f"#### {_season}")
+            _cols = st.columns(2)
+            for _day_type, _col in zip(_P8_DAY_TYPES, _cols):
+                _rep, _n_days = _p8_representative_day(_season, _day_type)
+                with _col:
+                    if _rep.empty or _rep["demand_kwh"].isna().all():
+                        st.info(f"{_season}・{_day_type}：データがありません。")
+                        continue
+                    _rep_kpis = solar_simulator.calc_kpis(_rep)
+                    st.caption(f"{_day_type}（{_n_days}日の平均）")
+                    _rk1, _rk2, _rk3 = st.columns(3)
+                    _rk1.metric("需要量", f"{_rep_kpis['total_demand_kwh']:,.1f} kWh")
+                    _rk2.metric("自給率", f"{_rep_kpis['self_sufficiency_rate']:.1f} %")
+                    _rk3.metric("外部調達", f"{_rep_kpis['total_grid_import_kwh']:,.1f} kWh")
+                    _fig = visualizer.solar_supply_chart(_rep, title=f"{_season}・{_day_type}の代表的な1日")
+                    _fig.update_xaxes(tickformat="%H:%M", title="時刻")
+                    st.plotly_chart(_fig, use_container_width=True)
+            st.markdown("---")
 
 with tab_detail:
     rows = []

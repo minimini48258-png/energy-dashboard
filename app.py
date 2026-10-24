@@ -52,6 +52,8 @@ _DEFAULTS: dict = {
     "ppa_sweep_df": None,
     "ppa_rec_kwh": 0,
     "ppa_fs_inputs": None,         # PPA採算性シミュレーター：ppa_retail_calc.SimulationInputs一式（dict）
+    "ppa_fs_sim_df": None,         # PPA採算性：実需要データでのsolar_simulator 30分値シミュレーション結果
+    "ppa_fs_demand_df": None,      # PPA採算性：実需要データシミュレーションに使った需要データ（選択施設でフィルタ済み）
 }
 for _k, _v in _DEFAULTS.items():
     if _k not in st.session_state:
@@ -133,7 +135,6 @@ pg = st.navigation({
     ],
     "需給・シミュレーション": [
         st.Page("pages/balance.py", title="需給分析", icon="⚡"),
-        st.Page("pages/ppa.py", title="PPAシミュレーション", icon="☀️"),
     ],
     "🏪 小売FS": [
         st.Page("pages/fs_scenario_design.py", title="シナリオ設計", icon="📝"),

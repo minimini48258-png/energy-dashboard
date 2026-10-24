@@ -62,7 +62,9 @@ class SolarAssetInputs:
     useful_life_years: int = 20
 
     battery_enabled: bool = False
-    battery_self_consumption_boost_pct: float = 15.0
+    battery_self_consumption_boost_pct: float = 15.0  # 自家消費率を仮定値で入力するモードで使用
+    battery_capacity_kwh: float = 0.0                 # 実需要データでの30分値シミュレーションに使用
+    battery_efficiency_pct: float = 95.0               # 充放電往復効率（実需要データシミュレーション用）
     battery_cost: float = 1_200_000.0
     battery_annual_om: float = 5000.0
 

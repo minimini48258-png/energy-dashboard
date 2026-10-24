@@ -1,7 +1,7 @@
 """
 pages/ppa_fs_design.py
-PPA採算性：シナリオ設計。顧客条件・太陽光条件・小売電力条件・維持管理・ファイナンス・
-リスクを設定し、st.session_state["ppa_fs_inputs"]（dict）に組み立てる。
+PPA採算性：シナリオ設計。顧客条件・需要データ/太陽光発電シミュレーション・小売電力条件・
+維持管理・ファイナンス・リスクを設定し、st.session_state["ppa_fs_inputs"]（dict）に組み立てる。
 試算の実行・結果表示は「試算結果」ページで行う。
 """
 
@@ -9,8 +9,11 @@ from __future__ import annotations
 
 import streamlit as st
 
+import common
+import ppa_demand_integration
 import ppa_retail_calc as calc
 import ppa_scenario_manager
+import solar_simulator
 
 st.title("📝 PPA採算性：シナリオ設計")
 st.caption(
@@ -27,9 +30,13 @@ d = st.session_state["ppa_fs_inputs"]
 rc1, rc2, rc3 = st.columns([2, 2, 4])
 if rc1.button("🏠 住宅サンプルに戻す"):
     st.session_state["ppa_fs_inputs"] = calc.inputs_to_dict(calc.create_residential_sample())
+    st.session_state["ppa_fs_sim_df"] = None
+    st.session_state["ppa_fs_demand_df"] = None
     st.rerun()
 if rc2.button("🏢 事業所サンプルに戻す"):
     st.session_state["ppa_fs_inputs"] = calc.inputs_to_dict(calc.create_business_sample())
+    st.session_state["ppa_fs_sim_df"] = None
+    st.session_state["ppa_fs_demand_df"] = None
     st.rerun()
 
 # ── ① 顧客条件 ──────────────────────────────────────────────────────
@@ -62,66 +69,158 @@ with st.container(border=True):
         "既存電力料金の上昇率(%/年)", value=float(c["current_price_escalation_rate_pct"]), step=0.1,
         help="新プラン(一体単価)は契約期間中固定、現在プランのみ上昇すると仮定。",
     )
-    col9, col10 = st.columns(2)
-    c["annual_consumption_kwh"] = col9.number_input("年間電力使用量・初年度(kWh)", min_value=0.0, value=float(c["annual_consumption_kwh"]), step=100.0)
-    c["consumption_growth_rate_pct"] = col10.number_input("年間使用量の増減率(%/年)", value=float(c["consumption_growth_rate_pct"]), step=0.1)
-
-# ── ② 太陽光条件 ────────────────────────────────────────────────────
-with st.container(border=True):
-    st.markdown("**② 太陽光条件**")
-    s = d["solar"]
-    mode_label = st.radio(
-        "発電量の入力方式", ["設備容量×kWh/kWで計算", "年間発電量を直接入力"],
-        index=0 if s["generation_input_mode"] == "capacity_x_yield" else 1, horizontal=True,
+    c["consumption_growth_rate_pct"] = col8.number_input(
+        "年間使用量の増減率(%/年)", value=float(c["consumption_growth_rate_pct"]), step=0.1,
+        help="世帯人数の変化、事業拡大・縮小等による使用量の年平均変化率（将来年度の投影にのみ使用）。",
     )
-    s["generation_input_mode"] = "capacity_x_yield" if mode_label == "設備容量×kWh/kWで計算" else "direct_input"
+
+# ── ② 需要データ・太陽光発電シミュレーション ─────────────────────────
+with st.container(border=True):
+    st.markdown("**② 需要データ・太陽光発電シミュレーション**")
+    st.caption(
+        "この顧客の実際の30分値使用量データを使って、太陽光でどれだけ需要を賄え、"
+        "どれだけ電気が余るか（→小売電気事業者が買い取り他需要家へ供給）、"
+        "どれだけ不足して市場等から別途調達が必要かを実績ベースで計算します。"
+        "データが無い場合は、自家消費率を仮定値で入力する簡易モードにフォールバックします。"
+    )
+
+    s = d["solar"]
+    demand_df = st.session_state.get("df")
 
     col1, col2, col3 = st.columns(3)
     s["capacity_kw"] = col1.number_input("太陽光容量(kW)", min_value=0.0, value=float(s["capacity_kw"]), step=1.0)
     s["unit_cost_per_kw"] = col2.number_input("設備導入単価(円/kW)", min_value=0.0, value=float(s["unit_cost_per_kw"]), step=1000.0)
     s["subsidy_amount"] = col3.number_input("補助金額(円)", min_value=0.0, value=float(s["subsidy_amount"]), step=10000.0)
 
-    col4, col5, col6 = st.columns(3)
-    s["annual_yield_per_kw"] = col4.number_input(
-        "年間発電量(kWh/kW/年)", min_value=0.0, value=float(s["annual_yield_per_kw"]), step=10.0,
-        disabled=s["generation_input_mode"] != "capacity_x_yield",
-        help="設置地域・方位・角度により800〜1,300kWh/kW/年程度まで幅があります。",
-    )
-    s["direct_annual_generation_kwh"] = col5.number_input(
-        "初年度年間発電量(kWh)", min_value=0.0, value=float(s["direct_annual_generation_kwh"]),
-        disabled=s["generation_input_mode"] != "direct_input",
-    )
-    s["degradation_rate_pct"] = col6.number_input(
+    col4, col5 = st.columns(2)
+    s["degradation_rate_pct"] = col4.number_input(
         "経年劣化率(%/年)", min_value=0.0, value=float(s["degradation_rate_pct"]), step=0.1,
         help="一般的な結晶シリコン系パネルで0.3〜0.7%/年程度が目安。",
     )
+    s["useful_life_years"] = col5.number_input("設備利用期間(年)", min_value=1, value=int(s["useful_life_years"]))
 
-    col7, col8, col9 = st.columns(3)
-    s["self_consumption_rate_pct"] = col7.number_input(
-        "自家消費率(%)", min_value=0.0, max_value=100.0, value=float(s["self_consumption_rate_pct"]),
-        help="発電量のうち顧客が自家消費する割合（使用量でキャップ）。年間代表率としての簡略化。",
-    )
-    s["useful_life_years"] = col8.number_input("設備利用期間(年)", min_value=1, value=int(s["useful_life_years"]))
-    _initial_investment = calc.compute_initial_investment(calc.SolarAssetInputs(**s))
-    col9.metric("初期設備費(自動計算)", f"{_initial_investment:,.0f}円")
-
-    with st.expander("蓄電池・エコキュート等（簡易対応：自家消費率への上乗せとして近似）", expanded=False):
+    with st.expander("蓄電池（任意）", expanded=bool(s.get("battery_enabled"))):
         bc1, bc2, bc3, bc4 = st.columns(4)
         s["battery_enabled"] = bc1.checkbox("蓄電池を導入する", value=bool(s["battery_enabled"]))
-        s["battery_self_consumption_boost_pct"] = bc2.number_input(
-            "自家消費率への上乗せ(pp)", value=float(s["battery_self_consumption_boost_pct"]), disabled=not s["battery_enabled"],
-            key="ppa_battery_boost",
+        s["battery_capacity_kwh"] = bc2.number_input(
+            "蓄電池容量(kWh)", min_value=0.0, value=float(s.get("battery_capacity_kwh", 0.0)),
+            step=10.0, disabled=not s["battery_enabled"], key="ppa_battery_kwh",
         )
-        s["battery_cost"] = bc3.number_input("導入費用(円)", min_value=0.0, value=float(s["battery_cost"]), step=10000.0, disabled=not s["battery_enabled"], key="ppa_battery_cost")
-        s["battery_annual_om"] = bc4.number_input("年間O&M(円/年)", min_value=0.0, value=float(s["battery_annual_om"]), disabled=not s["battery_enabled"], key="ppa_battery_om")
+        s["battery_efficiency_pct"] = bc3.number_input(
+            "充放電往復効率(%)", min_value=50.0, max_value=100.0,
+            value=float(s.get("battery_efficiency_pct", 95.0)), disabled=not s["battery_enabled"], key="ppa_battery_eff",
+        )
+        s["battery_cost"] = bc4.number_input("導入費用(円)", min_value=0.0, value=float(s["battery_cost"]), step=10000.0, disabled=not s["battery_enabled"], key="ppa_battery_cost")
+        s["battery_annual_om"] = st.number_input(
+            "年間O&M(円/年)", min_value=0.0, value=float(s["battery_annual_om"]), disabled=not s["battery_enabled"], key="ppa_battery_om",
+        )
 
-        hc1, hc2, hc3 = st.columns(3)
-        s["heat_pump_enabled"] = hc1.checkbox("エコキュート等を導入する", value=bool(s["heat_pump_enabled"]))
-        s["heat_pump_self_consumption_boost_pct"] = hc2.number_input(
-            "自家消費率への上乗せ(pp)", value=float(s["heat_pump_self_consumption_boost_pct"]), disabled=not s["heat_pump_enabled"],
-            key="ppa_hp_boost",
+        battery_mode = "basic"
+        min_soc_pct = 30.0
+        peak_threshold_kw = None
+        if s["battery_enabled"]:
+            battery_mode = st.radio(
+                "充放電モード", list(solar_simulator.BATTERY_MODE_LABELS.keys()),
+                format_func=lambda k: solar_simulator.BATTERY_MODE_LABELS.get(k, k),
+                horizontal=True, key="ppa_battery_mode",
+            )
+            if battery_mode == "reserve":
+                min_soc_pct = st.slider("最低残量(%)", min_value=10, max_value=70, value=30, step=5, key="ppa_battery_min_soc")
+            elif battery_mode == "peak_cut":
+                peak_threshold_kw = st.number_input("デマンド閾値(kW)", min_value=1.0, value=10.0, step=1.0, key="ppa_battery_peak_kw")
+
+    st.markdown("###### 実績データとの照合")
+    if demand_df is None:
+        st.info("👈 サイドバーの「データ読み込み」ページで需要データを読み込むと、実績ベースで自家消費・余剰電力を自動計算できます。現在は仮定値モードで入力してください。")
+        use_real_data = False
+    else:
+        facility_names, group_df = common.get_group_context(demand_df)
+        filtered_base, group_mode = common.render_facility_filter(demand_df, facility_names, group_df)
+        use_real_data = st.checkbox(
+            "この顧客の需要として選択した施設の実績データを使って自家消費率を計算する", value=True,
+            key="ppa_use_real_data",
         )
-        s["heat_pump_cost"] = hc3.number_input("導入費用(円)", min_value=0.0, value=float(s["heat_pump_cost"]), step=10000.0, disabled=not s["heat_pump_enabled"], key="ppa_hp_cost")
+
+        if use_real_data and not filtered_base.empty:
+            with st.spinner("実データで太陽光＋蓄電池シミュレーション計算中..."):
+                metrics = ppa_demand_integration.run_real_data_simulation(
+                    filtered_base,
+                    solar_capacity_kw=s["capacity_kw"],
+                    battery_capacity_kwh=s.get("battery_capacity_kwh", 0.0) if s["battery_enabled"] else 0.0,
+                    battery_efficiency_pct=s.get("battery_efficiency_pct", 95.0),
+                    mode=battery_mode,
+                    min_soc_pct=min_soc_pct,
+                    peak_threshold_kw=peak_threshold_kw,
+                )
+            d = ppa_demand_integration.apply_real_data_metrics(d, metrics)
+            s = d["solar"]
+
+            st.session_state["ppa_fs_sim_df"] = metrics.sim_df
+            st.session_state["ppa_fs_demand_df"] = filtered_base
+
+            mk1, mk2, mk3, mk4 = st.columns(4)
+            mk1.metric("年間使用量(実績換算)", f"{metrics.annual_consumption_kwh:,.0f} kWh")
+            mk2.metric("年間発電量(実績換算)", f"{metrics.annual_generation_kwh:,.0f} kWh")
+            mk3.metric("自家消費率", f"{metrics.self_consumption_rate_pct:.1f} %")
+            mk4.metric("自給率", f"{metrics.self_sufficiency_rate_pct:.1f} %")
+            mk5, mk6 = st.columns(2)
+            mk5.metric("外部調達電力量(年換算・市場等から調達)", f"{metrics.grid_import_kwh_annual:,.0f} kWh")
+            mk6.metric("余剰電力量(年換算・小売電気として他需要家へ)", f"{metrics.grid_export_kwh_annual:,.0f} kWh")
+            st.caption(f"実データ対象期間: {metrics.n_days_in_data}日分のデータを年換算（×365/{metrics.n_days_in_data}）して使用しています。")
+        else:
+            use_real_data = False
+            if filtered_base.empty:
+                st.warning("施設が選択されていません。")
+
+    if not use_real_data:
+        st.session_state["ppa_fs_sim_df"] = None
+        st.session_state["ppa_fs_demand_df"] = None
+        st.markdown("###### 仮定値モード（実データ未使用）")
+        mode_label = st.radio(
+            "発電量の入力方式", ["設備容量×kWh/kWで計算", "年間発電量を直接入力"],
+            index=0 if s["generation_input_mode"] == "capacity_x_yield" else 1, horizontal=True,
+        )
+        s["generation_input_mode"] = "capacity_x_yield" if mode_label == "設備容量×kWh/kWで計算" else "direct_input"
+
+        mcol1, mcol2, mcol3 = st.columns(3)
+        s["annual_yield_per_kw"] = mcol1.number_input(
+            "年間発電量(kWh/kW/年)", min_value=0.0, value=float(s["annual_yield_per_kw"]), step=10.0,
+            disabled=s["generation_input_mode"] != "capacity_x_yield",
+            help="設置地域・方位・角度により800〜1,300kWh/kW/年程度まで幅があります。",
+        )
+        s["direct_annual_generation_kwh"] = mcol2.number_input(
+            "初年度年間発電量(kWh)", min_value=0.0, value=float(s["direct_annual_generation_kwh"]),
+            disabled=s["generation_input_mode"] != "direct_input",
+        )
+        c["annual_consumption_kwh"] = mcol3.number_input(
+            "年間電力使用量・初年度(kWh)", min_value=0.0, value=float(c["annual_consumption_kwh"]), step=100.0,
+        )
+
+        mcol4, mcol5 = st.columns(2)
+        s["self_consumption_rate_pct"] = mcol4.number_input(
+            "自家消費率(%)", min_value=0.0, max_value=100.0, value=float(s["self_consumption_rate_pct"]),
+            help="発電量のうち顧客が自家消費する割合（使用量でキャップ）。年間代表率としての簡略化。",
+        )
+        with mcol5:
+            st.markdown("蓄電池・エコキュートによる自家消費率への上乗せ")
+            bb1, bb2 = st.columns(2)
+            s["battery_self_consumption_boost_pct"] = bb1.number_input(
+                "蓄電池(pp)", value=float(s["battery_self_consumption_boost_pct"]), disabled=not s["battery_enabled"], key="ppa_battery_boost_assume",
+            )
+            s["heat_pump_enabled"] = bb2.checkbox("エコキュート等", value=bool(s["heat_pump_enabled"]), key="ppa_hp_enabled_assume")
+        s["heat_pump_self_consumption_boost_pct"] = st.number_input(
+            "エコキュート等の自家消費率への上乗せ(pp)", value=float(s["heat_pump_self_consumption_boost_pct"]),
+            disabled=not s["heat_pump_enabled"], key="ppa_hp_boost_assume",
+        )
+        s["heat_pump_cost"] = st.number_input(
+            "エコキュート等導入費用(円)", min_value=0.0, value=float(s["heat_pump_cost"]), step=10000.0,
+            disabled=not s["heat_pump_enabled"], key="ppa_hp_cost_assume",
+        )
+    else:
+        s["heat_pump_enabled"] = False
+
+    _initial_investment = calc.compute_initial_investment(calc.SolarAssetInputs(**s))
+    st.metric("初期設備費(自動計算)", f"{_initial_investment:,.0f}円")
 
 # ── ③ 小売電力条件・余剰電力 ─────────────────────────────────────────
 with st.container(border=True):
@@ -142,7 +241,7 @@ with st.container(border=True):
     r["renewable_levy_rate"] = col6.number_input("再エネ賦課金単価(円/kWh)", min_value=0.0, value=float(r["renewable_levy_rate"]), step=0.1, disabled=not r["apply_renewable_levy"])
     r["retail_cost_escalation_rate_pct"] = col7.number_input("小売原価上昇率(%/年)", value=float(r["retail_cost_escalation_rate_pct"]), step=0.1)
 
-    st.markdown("**余剰電力**")
+    st.markdown("**余剰電力（小売電気事業者が買い取り、他の需要先への調達電源として活用）**")
     su = d["surplus"]
     col8, col9, col10 = st.columns(3)
     su["surplus_price"] = col8.number_input("余剰電力売却単価(円/kWh)", min_value=0.0, value=float(su["surplus_price"]), step=0.1)
