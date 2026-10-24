@@ -5,8 +5,6 @@ pages/balance.py
 
 from __future__ import annotations
 
-from datetime import timedelta
-
 import pandas as pd
 import streamlit as st
 
@@ -22,18 +20,14 @@ df = common.require_data()
 facility_names, group_df = common.get_group_context(df)
 filtered_base, group_mode = common.render_facility_filter(df, facility_names, group_df)
 
-_bal_supply_parts = []
 _uploaded_supply = st.session_state.get("supply_df")
-if _uploaded_supply is not None:
-    _sel_names = st.session_state.get("selected_supply_names", [])
-    _filtered_upload = (
-        _uploaded_supply[_uploaded_supply["source_name"].isin(_sel_names)]
-        if _sel_names else _uploaded_supply
-    )
-    _bal_supply_parts.append(_filtered_upload)
-_param_sources = [supply_planner.SupplySource(**s) for s in st.session_state.get("supply_sources", [])]
+_param_sources_all = [supply_planner.SupplySource(**s) for s in st.session_state.get("supply_sources", [])]
 
-if not _bal_supply_parts and not _param_sources:
+uploaded_names = sorted(_uploaded_supply["source_name"].unique().tolist()) if _uploaded_supply is not None else []
+param_names_all = [s.name for s in _param_sources_all]
+all_source_names = uploaded_names + param_names_all
+
+if not all_source_names:
     st.info(
         "供給データがありません。\n\n"
         "- **実データ**: 「データ読み込み」ページから Excel をアップロード\n"
@@ -42,18 +36,37 @@ if not _bal_supply_parts and not _param_sources:
 else:
     bc1, bc2 = st.columns([2, 4])
     with bc1:
-        bal_period = st.selectbox(
-            "分析期間",
-            ["全データ期間", "直近1年", "直近6か月", "直近3か月"],
-            index=0, key="bal_period",
+        start_dt, end_dt, bal_period = common.render_flexible_period(
+            filtered_base,
+            key_prefix="bal",
+            options=["全データ期間", "1年", "3か月", "1か月", "1週間", "1日", "カスタム"],
+            default_index=0,
         )
-    bal_df_demand = common.filter_by_period_option(filtered_base, bal_period)
+    bal_df_demand = analyzer.filter_by_period(filtered_base, start_dt, end_dt)
     with bc2:
+        if bal_df_demand.empty:
+            st.warning("選択した期間・施設にデータがありません。")
+            st.stop()
         st.caption(
             f"需要データ: {bal_df_demand['datetime'].min().strftime('%Y/%m/%d')} 〜 "
             f"{bal_df_demand['datetime'].max().strftime('%Y/%m/%d')}  "
             f"（{len(bal_df_demand):,} 行）"
         )
+
+    _prev_sel = [n for n in st.session_state.get("bal_selected_sources", all_source_names) if n in all_source_names]
+    sel_sources = st.multiselect(
+        "表示する電源", options=all_source_names, default=_prev_sel, key="bal_selected_sources",
+    )
+    if not sel_sources:
+        st.warning("電源を1つ以上選択してください。")
+        st.stop()
+
+    _bal_supply_parts = []
+    if _uploaded_supply is not None:
+        _sel_uploaded = [n for n in uploaded_names if n in sel_sources]
+        if _sel_uploaded:
+            _bal_supply_parts.append(_uploaded_supply[_uploaded_supply["source_name"].isin(_sel_uploaded)])
+    _param_sources = [s for s in _param_sources_all if s.name in sel_sources]
 
     bal_timestamps = pd.DatetimeIndex(bal_df_demand["datetime"].sort_values().unique())
     if _param_sources:
@@ -69,13 +82,6 @@ else:
     balance_df = financial_model.calc_balance(bal_df_demand, bal_supply_df)
     source_names = sorted(bal_supply_df["source_name"].unique().tolist())
     kpis = financial_model.calc_balance_kpis(balance_df)
-
-    uploaded_names = sorted(_uploaded_supply["source_name"].unique()) if _uploaded_supply is not None else []
-    param_names = [s.name for s in _param_sources]
-    if uploaded_names:
-        st.caption(f"📂 実データ: {', '.join(uploaded_names)}")
-    if param_names:
-        st.caption(f"⚙️ 推計値: {', '.join(param_names)}")
 
     k1, k2, k3, k4, k5 = st.columns(5)
     k1.metric("総需要", f"{kpis['total_demand_kwh']/1000:.1f} MWh")

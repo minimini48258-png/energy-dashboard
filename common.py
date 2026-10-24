@@ -128,26 +128,34 @@ def render_period_selector(base_df: pd.DataFrame, key_prefix: str, default_index
     return analyzer.filter_by_period(base_df, start, end)
 
 
-def render_period_and_kpis(
-    filtered_base: pd.DataFrame,
-    group_mode: str,
-    group_df: pd.DataFrame,
-) -> tuple[pd.DataFrame, pd.DataFrame, pd.Timestamp, pd.Timestamp, str]:
+def render_flexible_period(
+    base_df: pd.DataFrame,
+    key_prefix: str,
+    options: list[str] | None = None,
+    default_index: int = 2,
+    nav_end_state_key: str | None = None,
+) -> tuple[pd.Timestamp, pd.Timestamp, str]:
     """
-    需要カーブ・需要パターン分析専用：表示期間・日付ナビ・集計単位・KPI表示。
-    Returns: (filtered, filtered_base, start_dt, end_dt, agg_mode)
-    filtered / filtered_base は、集計単位が「グループ合計」の場合 group_label 列が付与された状態で返る。
+    「1日／1週間／1か月／3か月／1年／全データ期間／カスタム」の期間セレクタと
+    前後ナビゲーション（◀◀／◀／日付指定／▶）を描画し、(start_dt, end_dt, period_option) を返す。
+    key_prefix はウィジェットキーの衝突を避けるためページごとに変える。
     """
-    dt_min: date = filtered_base["datetime"].dropna().min().date()
-    dt_max: date = filtered_base["datetime"].dropna().max().date()
+    if options is None:
+        options = ["1日", "1週間", "1か月", "3か月", "1年", "カスタム"]
+    if nav_end_state_key is None:
+        nav_end_state_key = f"{key_prefix}_nav_end_date"
+
+    dt_min: date = base_df["datetime"].dropna().min().date()
+    dt_max: date = base_df["datetime"].dropna().max().date()
 
     col_p, col_nav = st.columns([2, 3])
     with col_p:
         period_option = st.selectbox(
-            "表示期間",
-            options=["1日", "1週間", "1か月", "3か月", "1年", "カスタム"],
-            index=2, key="common_period_option",
+            "表示期間", options=options, index=default_index, key=f"{key_prefix}_period_option",
         )
+
+    if period_option == "全データ期間":
+        return pd.Timestamp(dt_min), pd.Timestamp(dt_max) + timedelta(days=1) - timedelta(seconds=1), period_option
 
     period_delta_map = {
         "1日": timedelta(days=1), "1週間": timedelta(weeks=1), "1か月": timedelta(days=30),
@@ -158,7 +166,7 @@ def render_period_and_kpis(
         with col_nav:
             date_range = st.date_input(
                 "期間を指定", value=(dt_min, dt_max), min_value=dt_min, max_value=dt_max,
-                key="common_date_range",
+                key=f"{key_prefix}_date_range",
             )
         if isinstance(date_range, (list, tuple)) and len(date_range) == 2:
             start_dt = pd.Timestamp(date_range[0])
@@ -166,35 +174,52 @@ def render_period_and_kpis(
         else:
             start_dt = pd.Timestamp(dt_min)
             end_dt = pd.Timestamp(dt_max)
-    else:
-        delta = period_delta_map[period_option]
-        nav_min = min(dt_min + delta, dt_max)
-        nav_end = st.session_state.get("nav_end_date") or dt_max
-        nav_end = max(nav_min, min(nav_end, dt_max))
+        return start_dt, end_dt, period_option
 
-        with col_nav:
-            c1, c2, c3, c4 = st.columns([1, 1, 4, 1])
-            with c1:
-                if st.button("◀◀", help="データの先頭へ", key="common_nav_first"):
-                    nav_end = nav_min
-                    st.session_state["nav_end_date"] = nav_end
-            with c2:
-                if st.button("◀", help="前の期間へ", key="common_nav_prev"):
-                    nav_end = max(nav_min, nav_end - delta)
-                    st.session_state["nav_end_date"] = nav_end
-            with c3:
-                nav_end = st.date_input(
-                    "表示終了日", value=nav_end, min_value=nav_min, max_value=dt_max,
-                    label_visibility="collapsed", key="common_nav_date_input",
-                )
-                st.session_state["nav_end_date"] = nav_end
-            with c4:
-                if st.button("▶", help="次の期間へ", key="common_nav_next"):
-                    nav_end = min(dt_max, nav_end + delta)
-                    st.session_state["nav_end_date"] = nav_end
+    delta = period_delta_map[period_option]
+    nav_min = min(dt_min + delta, dt_max)
+    nav_end = st.session_state.get(nav_end_state_key) or dt_max
+    nav_end = max(nav_min, min(nav_end, dt_max))
 
-        end_dt = pd.Timestamp(nav_end)
-        start_dt = end_dt - delta
+    with col_nav:
+        c1, c2, c3, c4 = st.columns([1, 1, 4, 1])
+        with c1:
+            if st.button("◀◀", help="データの先頭へ", key=f"{key_prefix}_nav_first"):
+                nav_end = nav_min
+                st.session_state[nav_end_state_key] = nav_end
+        with c2:
+            if st.button("◀", help="前の期間へ", key=f"{key_prefix}_nav_prev"):
+                nav_end = max(nav_min, nav_end - delta)
+                st.session_state[nav_end_state_key] = nav_end
+        with c3:
+            nav_end = st.date_input(
+                "表示終了日", value=nav_end, min_value=nav_min, max_value=dt_max,
+                label_visibility="collapsed", key=f"{key_prefix}_nav_date_input",
+            )
+            st.session_state[nav_end_state_key] = nav_end
+        with c4:
+            if st.button("▶", help="次の期間へ", key=f"{key_prefix}_nav_next"):
+                nav_end = min(dt_max, nav_end + delta)
+                st.session_state[nav_end_state_key] = nav_end
+
+    end_dt = pd.Timestamp(nav_end)
+    start_dt = end_dt - delta
+    return start_dt, end_dt, period_option
+
+
+def render_period_and_kpis(
+    filtered_base: pd.DataFrame,
+    group_mode: str,
+    group_df: pd.DataFrame,
+) -> tuple[pd.DataFrame, pd.DataFrame, pd.Timestamp, pd.Timestamp, str]:
+    """
+    需要カーブ・需要パターン分析専用：表示期間・日付ナビ・集計単位・KPI表示。
+    Returns: (filtered, filtered_base, start_dt, end_dt, agg_mode)
+    filtered / filtered_base は、集計単位が「グループ合計」の場合 group_label 列が付与された状態で返る。
+    """
+    start_dt, end_dt, _period_option = render_flexible_period(
+        filtered_base, key_prefix="common", default_index=2, nav_end_state_key="nav_end_date",
+    )
 
     agg_mode = st.radio(
         "集計単位", options=["施設別", "グループ合計", "全施設合計"],
