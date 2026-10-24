@@ -57,7 +57,7 @@ class SolarAssetInputs:
     subsidy_amount: float = 0.0
     annual_yield_per_kw: float = 1100.0
     direct_annual_generation_kwh: float = 6600.0
-    degradation_rate_pct: float = 0.5
+    degradation_rate_pct: float = 0.33
     self_consumption_rate_pct: float = 50.0
     useful_life_years: int = 20
 
@@ -104,7 +104,7 @@ class MaintenanceInputs:
     om_fixed_amount: float = 0.0
     om_pct_of_capex: float = 1.0
 
-    inverter_replacement_year: Optional[int] = 12
+    inverter_replacement_year: Optional[int] = 15
     inverter_replacement_cost: float = 0.0
 
     repair_schedule: list[dict] = field(default_factory=list)  # [{"year", "amount", "label"}]
@@ -1007,7 +1007,7 @@ def rank_sensitivity_impact(points: list[SensitivityPoint]) -> list[dict]:
 def _common_maintenance(capex: float, removal_base: float, recycling_base: float, mgmt_annual: float) -> MaintenanceInputs:
     return MaintenanceInputs(
         om_mode="pct_of_capex", om_fixed_amount=0.0, om_pct_of_capex=1.0,
-        inverter_replacement_year=12, inverter_replacement_cost=capex * 0.08,
+        inverter_replacement_year=15, inverter_replacement_cost=capex * 0.08,
         repair_schedule=[],
         insurance_mode="pct_of_capex", insurance_fixed_amount=0.0, insurance_pct_of_capex=0.3,
         management_fee_annual=mgmt_annual,
@@ -1050,7 +1050,7 @@ def create_residential_sample() -> SimulationInputs:
         solar=SolarAssetInputs(
             generation_input_mode="capacity_x_yield", capacity_kw=capacity_kw, unit_cost_per_kw=unit_cost_per_kw,
             subsidy_amount=0.0, annual_yield_per_kw=1100.0, direct_annual_generation_kwh=capacity_kw * 1100.0,
-            degradation_rate_pct=0.5, self_consumption_rate_pct=50.0, useful_life_years=20,
+            degradation_rate_pct=0.33, self_consumption_rate_pct=50.0, useful_life_years=20,
             battery_enabled=False, battery_self_consumption_boost_pct=15.0, battery_cost=1_200_000.0, battery_annual_om=5000.0,
             heat_pump_enabled=False, heat_pump_self_consumption_boost_pct=8.0, heat_pump_cost=450_000.0,
         ),
@@ -1080,7 +1080,7 @@ def create_business_sample() -> SimulationInputs:
         solar=SolarAssetInputs(
             generation_input_mode="capacity_x_yield", capacity_kw=capacity_kw, unit_cost_per_kw=unit_cost_per_kw,
             subsidy_amount=0.0, annual_yield_per_kw=1100.0, direct_annual_generation_kwh=capacity_kw * 1100.0,
-            degradation_rate_pct=0.5, self_consumption_rate_pct=80.0, useful_life_years=20,
+            degradation_rate_pct=0.33, self_consumption_rate_pct=80.0, useful_life_years=20,
             battery_enabled=False, battery_self_consumption_boost_pct=10.0, battery_cost=6_000_000.0, battery_annual_om=30_000.0,
             heat_pump_enabled=False, heat_pump_self_consumption_boost_pct=5.0, heat_pump_cost=2_000_000.0,
         ),

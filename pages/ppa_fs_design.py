@@ -95,7 +95,7 @@ with st.container(border=True):
     col4, col5 = st.columns(2)
     s["degradation_rate_pct"] = col4.number_input(
         "経年劣化率(%/年)", min_value=0.0, value=float(s["degradation_rate_pct"]), step=0.1,
-        help="一般的な結晶シリコン系パネルで0.3〜0.7%/年程度が目安。",
+        help="サンプル既定値0.33%/年は「20年で累積約5〜6%、30年で累積約9%の発電量低下」という前提に基づく仮定値。",
     )
     s["useful_life_years"] = col5.number_input("設備利用期間(年)", min_value=1, value=int(s["useful_life_years"]))
 
@@ -268,7 +268,10 @@ with st.container(border=True):
 
     col7, col8, col9 = st.columns(3)
     m["management_fee_annual"] = col7.number_input("設備管理費(円/年)", min_value=0.0, value=float(m["management_fee_annual"]))
-    _inv_year = col8.number_input("パワコン交換年(0=交換なし)", min_value=0, value=int(m["inverter_replacement_year"] or 0))
+    _inv_year = col8.number_input(
+        "パワコン交換年(0=交換なし)", min_value=0, value=int(m["inverter_replacement_year"] or 0),
+        help="サンプル既定値は15年（パワコンは15年程度で交換が必要という前提の仮定値）。",
+    )
     m["inverter_replacement_year"] = _inv_year if _inv_year > 0 else None
     m["inverter_replacement_cost"] = col9.number_input("パワコン交換費用(円)", min_value=0.0, value=float(m["inverter_replacement_cost"]), step=10000.0)
 
