@@ -7,6 +7,8 @@ PPA採算性：シナリオ設計。顧客条件・需要データ/太陽光発�
 
 from __future__ import annotations
 
+import json
+
 import streamlit as st
 
 import common
@@ -244,7 +246,10 @@ with st.container(border=True):
     st.markdown("**余剰電力（小売電気事業者が買い取り、他の需要先への調達電源として活用）**")
     su = d["surplus"]
     col8, col9, col10 = st.columns(3)
-    su["surplus_price"] = col8.number_input("余剰電力売却単価(円/kWh)", min_value=0.0, value=float(su["surplus_price"]), step=0.1)
+    su["surplus_price"] = col8.number_input(
+        "余剰電力売却単価(円/kWh)", min_value=0.0, value=float(su["surplus_price"]), step=0.1,
+        help="サンプル既定値15円/kWhは、単純な市場売却ではなく他需要家への供給電源として活用する想定の標準買取単価（※仮定値）。",
+    )
     su["surplus_price_escalation_rate_pct"] = col9.number_input("売却単価の上昇率(%/年)", value=float(su["surplus_price_escalation_rate_pct"]), step=0.1)
     dest_labels = {"market": "市場へ売却", "self_retail_portfolio": "他の自社需要家へ販売", "battery_charge": "蓄電池へ充電"}
     dest_label = col10.selectbox("売却先", list(dest_labels.values()), index=list(dest_labels.keys()).index(su["destination"]))
@@ -365,5 +370,38 @@ with st.container(border=True):
         else:
             ppa_scenario_manager.save_scenario(ppa_scenario_manager.PpaScenario(name=scenario_name, inputs=d))
             st.success(f"シナリオ「{scenario_name}」を保存しました。「シナリオ比較」ページで確認できます。")
+
+# ── ⑧ バックアップ（JSON入出力） ────────────────────────────────────
+with st.container(border=True):
+    st.markdown("**⑧ バックアップ（JSON入出力）**")
+    st.caption(
+        "⚠️ このアプリはコードを更新（git push）するたびにサーバーが再作成され、"
+        "「⑦シナリオとして保存」の内容も含めて消えてしまいます。大事に作り込んだ条件は、"
+        "下記からJSONファイルとしてダウンロードし、ご自身のPC・Google Drive等に保管してください。"
+        "次回、同じJSONファイルを読み込めば条件を復元できます。"
+    )
+    jc1, jc2 = st.columns(2)
+    with jc1:
+        st.download_button(
+            "📥 現在の入力をJSON出力",
+            data=json.dumps(d, ensure_ascii=False, indent=2).encode("utf-8"),
+            file_name=f"ppa_scenario_{scenario_name or 'untitled'}.json",
+            mime="application/json",
+        )
+    with jc2:
+        uploaded_json = st.file_uploader("📤 JSONファイルを読み込んで復元", type=["json"], key="ppa_json_upload")
+        if uploaded_json is not None and st.session_state.get("ppa_last_uploaded_json_id") != uploaded_json.file_id:
+            try:
+                restored = json.loads(uploaded_json.read().decode("utf-8"))
+                calc.inputs_from_dict(restored)  # 形式検証
+                st.session_state["ppa_fs_inputs"] = restored
+                st.session_state["ppa_fs_sim_df"] = None
+                st.session_state["ppa_fs_demand_df"] = None
+                st.session_state["ppa_last_uploaded_json_id"] = uploaded_json.file_id
+                ppa_scenario_manager.save_design(calc.inputs_from_dict(restored))
+                st.success("JSONから条件を復元しました。")
+                st.rerun()
+            except Exception as e:
+                st.error(f"読み込みに失敗しました: {e}")
 
 st.info("👉 入力は自動保存されます。「試算結果」ページへ進んで計算結果を確認してください。")

@@ -1034,7 +1034,9 @@ def _common_retail() -> RetailCostInputs:
 
 
 def _common_surplus() -> SurplusInputs:
-    return SurplusInputs(surplus_price=8.0, surplus_price_escalation_rate_pct=0.0, destination="market")
+    # 余剰電力は小売電気事業者が買い取り、他需要家への供給電源として活用する想定のため、
+    # 単純な市場売却(JEPX卸値程度)より高めの標準買取単価15円/kWhを採用（※仮定値）。
+    return SurplusInputs(surplus_price=15.0, surplus_price_escalation_rate_pct=0.0, destination="market")
 
 
 def create_residential_sample() -> SimulationInputs:

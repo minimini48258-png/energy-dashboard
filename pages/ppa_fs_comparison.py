@@ -5,6 +5,9 @@ PPA採算性：シナリオ比較。保存済みPPAシナリオを一覧・比�
 
 from __future__ import annotations
 
+import json
+from dataclasses import asdict
+
 import pandas as pd
 import streamlit as st
 
@@ -19,8 +22,38 @@ st.caption(
 
 scenarios = ppa_scenario_manager.load_scenarios()
 
+with st.expander("💾 バックアップ（全シナリオをJSONで入出力）", expanded=not scenarios):
+    st.caption(
+        "⚠️ このアプリはコードを更新（git push）するたびにサーバーが再作成され、保存済みシナリオは"
+        "消えてしまいます。定期的に下記からバックアップし、必要なときに読み込んでください。"
+    )
+    bc1, bc2 = st.columns(2)
+    with bc1:
+        if scenarios:
+            st.download_button(
+                "📥 全シナリオをJSON出力",
+                data=json.dumps([asdict(s) for s in scenarios], ensure_ascii=False, indent=2).encode("utf-8"),
+                file_name="ppa_scenarios_backup.json",
+                mime="application/json",
+            )
+        else:
+            st.caption("保存済みシナリオがありません。")
+    with bc2:
+        uploaded_backup = st.file_uploader("📤 バックアップJSONを読み込んで復元", type=["json"], key="ppa_scenarios_backup_upload")
+        if uploaded_backup is not None and st.session_state.get("ppa_last_scenarios_upload_id") != uploaded_backup.file_id:
+            try:
+                data = json.loads(uploaded_backup.read().decode("utf-8"))
+                restored = [ppa_scenario_manager.PpaScenario(**item) for item in data]
+                for sc in restored:
+                    ppa_scenario_manager.save_scenario(sc)
+                st.session_state["ppa_last_scenarios_upload_id"] = uploaded_backup.file_id
+                st.success(f"{len(restored)}件のシナリオを復元しました。")
+                st.rerun()
+            except Exception as e:
+                st.error(f"読み込みに失敗しました: {e}")
+
 if not scenarios:
-    st.info("保存済みシナリオがありません。「シナリオ設計」ページの末尾からシナリオを保存してください。")
+    st.info("保存済みシナリオがありません。「シナリオ設計」ページの末尾からシナリオを保存するか、上記からバックアップJSONを読み込んでください。")
     st.stop()
 
 del_col1, del_col2 = st.columns([3, 1])
