@@ -177,33 +177,60 @@ def render_flexible_period(
         return start_dt, end_dt, period_option
 
     delta = period_delta_map[period_option]
-    nav_min = min(dt_min + delta, dt_max)
-    nav_end = st.session_state.get(nav_end_state_key) or dt_max
+    # 終了日を選択日の23:59:59までを含むフル1日として扱う分、最速到達日は
+    # 従来の dt_min+delta ではなく dt_min+delta-1日（= start_dt が dt_min に一致する最小値）。
+    nav_min = min(dt_min + delta - timedelta(days=1), dt_max)
+    date_input_key = f"{key_prefix}_nav_date_input"
+
+    # st.date_input に key を渡すと、2回目以降のレンダリングでは value引数は無視され、
+    # ウィジェット自身が保持する st.session_state[date_input_key] の値がそのまま使われる。
+    # そのため「現在値」はこのキーを優先して読む（無ければ nav_end_state_key→dt_max）。
+    nav_end = st.session_state.get(date_input_key) or st.session_state.get(nav_end_state_key) or dt_max
     nav_end = max(nav_min, min(nav_end, dt_max))
 
     with col_nav:
         c1, c2, c3, c4 = st.columns([1, 1, 4, 1])
+        # ボタンのクリック判定は、日付入力ウィジェット（c3, key=date_input_key）が
+        # インスタンス化される前にすべて済ませる必要がある。st.session_state[key]は
+        # 同一実行内でそのキーのウィジェットが生成された後には書き換えられないため
+        # （StreamlitWidgetAlreadyInstantiatedError）。▶ボタン（c4）は見た目上は
+        # date_inputより右だが、コード上は先に判定することで見た目の列順は変えずに
+        # この制約を回避する。
         with c1:
-            if st.button("◀◀", help="データの先頭へ", key=f"{key_prefix}_nav_first"):
-                nav_end = nav_min
-                st.session_state[nav_end_state_key] = nav_end
+            clicked_first = st.button("◀◀", help="データの先頭へ", key=f"{key_prefix}_nav_first")
         with c2:
-            if st.button("◀", help="前の期間へ", key=f"{key_prefix}_nav_prev"):
-                nav_end = max(nav_min, nav_end - delta)
-                st.session_state[nav_end_state_key] = nav_end
+            clicked_prev = st.button("◀", help="前の期間へ", key=f"{key_prefix}_nav_prev")
+        with c4:
+            clicked_next = st.button("▶", help="次の期間へ", key=f"{key_prefix}_nav_next")
+
+        if clicked_first:
+            nav_end = nav_min
+            st.session_state[date_input_key] = nav_end
+            st.session_state[nav_end_state_key] = nav_end
+            st.rerun()
+        elif clicked_prev:
+            nav_end = max(nav_min, nav_end - delta)
+            st.session_state[date_input_key] = nav_end
+            st.session_state[nav_end_state_key] = nav_end
+            st.rerun()
+        elif clicked_next:
+            nav_end = min(dt_max, nav_end + delta)
+            st.session_state[date_input_key] = nav_end
+            st.session_state[nav_end_state_key] = nav_end
+            st.rerun()
+
         with c3:
             nav_end = st.date_input(
                 "表示終了日", value=nav_end, min_value=nav_min, max_value=dt_max,
-                label_visibility="collapsed", key=f"{key_prefix}_nav_date_input",
+                label_visibility="collapsed", key=date_input_key,
             )
             st.session_state[nav_end_state_key] = nav_end
-        with c4:
-            if st.button("▶", help="次の期間へ", key=f"{key_prefix}_nav_next"):
-                nav_end = min(dt_max, nav_end + delta)
-                st.session_state[nav_end_state_key] = nav_end
 
-    end_dt = pd.Timestamp(nav_end)
-    start_dt = end_dt - delta
+    # 「表示終了日」は選択した日を含む1日として扱う（例: 1日指定で9/28を選べば
+    # 9/28 00:00〜23:59:59。以前はnav_endをそのまま終了端として使っていたため、
+    # 選択日の前日しか表示されない不具合があった）。
+    end_dt = pd.Timestamp(nav_end) + timedelta(days=1) - timedelta(seconds=1)
+    start_dt = end_dt - delta + timedelta(seconds=1)
     return start_dt, end_dt, period_option
 
 
