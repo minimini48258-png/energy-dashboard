@@ -289,8 +289,11 @@ def load_file(
         suffix = Path(source).suffix.lower()
         _filename = filename or Path(source).name
     else:
-        suffix = ".xlsx"
+        # BytesIO等の場合、拡張子の手がかりは filename（呼び出し元から渡される元のファイル名）
+        # しか無い。これを見ずに固定で ".xlsx" 扱いにすると、CSVをアップロードしても
+        # 常にExcelとして読み込もうとして失敗するため、filename から拡張子を判定する。
         _filename = filename or getattr(source, "name", "不明")
+        suffix = Path(_filename).suffix.lower() if _filename else ".xlsx"
 
     # --- フォーマット判定（Excel のみ）---
     if suffix in {".xlsx", ".xls"}:
