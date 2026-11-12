@@ -48,7 +48,7 @@ def _supply_for_period(start: date, end: date) -> pd.DataFrame | None:
     return _sdf if not _sdf.empty else None
 
 
-period_label = f"{start_dt.strftime('%Y/%m/%d')} 〜 {end_dt.strftime('%Y/%m/%d')}"
+period_label = common.format_date_range(start_dt, end_dt)
 _chart_supply = _supply_for_period(start_dt, end_dt)
 st.plotly_chart(
     visualizer.demand_timeseries(_ts_data(filtered), title=f"電力使用量（30分値）— {period_label}"),

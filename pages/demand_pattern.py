@@ -50,8 +50,7 @@ else:  # 表示期間と同じ
 
 with p_col2:
     st.caption(
-        f"分析対象: {pat_df['datetime'].min().strftime('%Y/%m/%d')} 〜 "
-        f"{pat_df['datetime'].max().strftime('%Y/%m/%d')}  "
+        f"分析対象: {common.format_date_range(pat_df['datetime'].min(), pat_df['datetime'].max())}  "
         f"（{len(pat_df):,} 行）"
     )
 

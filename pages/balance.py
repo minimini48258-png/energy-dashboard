@@ -48,8 +48,8 @@ else:
             st.warning("選択した期間・施設にデータがありません。")
             st.stop()
         st.caption(
-            f"需要データ: {bal_df_demand['datetime'].min().strftime('%Y/%m/%d')} 〜 "
-            f"{bal_df_demand['datetime'].max().strftime('%Y/%m/%d')}  "
+            f"需要データ: "
+            f"{common.format_date_range(bal_df_demand['datetime'].min(), bal_df_demand['datetime'].max())}  "
             f"（{len(bal_df_demand):,} 行）"
         )
 

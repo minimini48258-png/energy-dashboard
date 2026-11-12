@@ -18,6 +18,15 @@ import grouping
 PERIOD_OPTIONS = ["全データ期間", "直近1年", "直近6か月", "直近3か月"]
 
 
+def format_date_range(start: pd.Timestamp, end: pd.Timestamp) -> str:
+    """開始日と終了日が同じ日なら単日表記、異なれば「開始〜終了」表記にする。"""
+    start_label = pd.Timestamp(start).strftime("%Y/%m/%d")
+    end_label = pd.Timestamp(end).strftime("%Y/%m/%d")
+    if start_label == end_label:
+        return start_label
+    return f"{start_label} 〜 {end_label}"
+
+
 def require_data() -> pd.DataFrame:
     """需要データが読み込まれていなければ案内を出して停止し、読み込まれていればdfを返す。"""
     df = st.session_state.get("df")
@@ -276,7 +285,7 @@ def render_period_and_kpis(
     m1.metric("積算使用量", _fmt(stats["total_kwh"]))
     m2.metric("最大 (30min)", f"{stats['max_kwh']:.2f} kWh")
     m3.metric("平均 (30min)", f"{stats['mean_kwh']:.2f} kWh")
-    m4.metric("表示期間", f"{start_dt.strftime('%Y/%m/%d')} 〜 {end_dt.strftime('%Y/%m/%d')}")
+    m4.metric("表示期間", format_date_range(start_dt, end_dt))
     st.markdown("---")
 
     return filtered, filtered_base, start_dt, end_dt, agg_mode
