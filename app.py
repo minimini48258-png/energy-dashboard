@@ -61,6 +61,10 @@ for _k, _v in _DEFAULTS.items():
     if _k not in st.session_state:
         st.session_state[_k] = _v
 
+# 供給グループ設定（電源種別・地域）は需要データの有無に関係なく保存済みのものを読み込む
+if "supply_custom_groups" not in st.session_state:
+    st.session_state["supply_custom_groups"] = grouping.load_supply_groups()
+
 # ── 需要データ・供給データの自動読み込み（保存済みの最新データがあれば復元） ──
 if st.session_state["df"] is None:
     _entries = cache_manager.list_entries()

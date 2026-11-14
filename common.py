@@ -311,31 +311,78 @@ def require_supply_data() -> pd.DataFrame:
     return analyzer.supply_to_standard(sdf)
 
 
-def render_source_filter(sdf: pd.DataFrame) -> pd.DataFrame:
-    """電源の選択（初期値は「データ読み込み」ページで選んだ表示対象の電源）。"""
+_SUPPLY_GROUP_COLS = {"電源種別別": "source_type", "地域別": "region"}
+
+
+def render_source_filter(sdf: pd.DataFrame) -> tuple[pd.DataFrame, str]:
+    """
+    供給側のグルーピング（電源個別／電源種別別／地域別）選択＋電源の絞り込み。
+    電源個別の場合、初期値は「データ読み込み」ページで選んだ表示対象の電源。
+    Returns: (filtered_base, group_mode)
+    """
     all_sources = sorted(sdf["facility_name"].unique().tolist())
-    default = [s for s in st.session_state.get("selected_supply_names", []) if s in all_sources] or all_sources
-    selected = st.multiselect("電源を選択", options=all_sources, default=default, key="supply_sel_sources")
+    group_df = grouping.build_supply_group_df(all_sources, st.session_state.get("supply_custom_groups", {}))
+
+    col_gm, col_gs = st.columns([1, 3])
+    with col_gm:
+        group_mode = st.selectbox(
+            "グルーピング", options=["電源個別", "電源種別別", "地域別"], index=0, key="supply_group_mode",
+        )
+    with col_gs:
+        if group_mode in _SUPPLY_GROUP_COLS:
+            col = _SUPPLY_GROUP_COLS[group_mode]
+            opts = sorted(group_df[col].unique().tolist())
+            label = "電源種別を選択" if col == "source_type" else "地域を選択"
+            sel_groups = st.multiselect(label, options=opts, default=opts, key=f"supply_group_sel_{col}")
+            selected = group_df[group_df[col].isin(sel_groups)]["facility_name"].tolist()
+        else:
+            default = [s for s in st.session_state.get("selected_supply_names", []) if s in all_sources] or all_sources
+            selected = st.multiselect("電源を選択", options=all_sources, default=default, key="supply_sel_sources")
+
     if not selected:
         st.warning("電源を1つ以上選択してください。")
         st.stop()
-    return analyzer.filter_by_facilities(sdf, selected)
+
+    filtered_base = analyzer.filter_by_facilities(sdf, selected)
+    if group_mode in _SUPPLY_GROUP_COLS:
+        filtered_base = grouping.add_group_column(filtered_base, group_df, _SUPPLY_GROUP_COLS[group_mode])
+    return filtered_base, group_mode
+
+
+def supply_series_for(df: pd.DataFrame, agg_mode: str) -> pd.DataFrame:
+    """
+    集計単位に応じて facility_name 列を読み替えた供給DataFrameを返す。
+    電源別→電源名のまま／グループ合計→グループ名（電源種別・地域）／全電源合計→「全電源合計」。
+    以降は analyzer の by_facility=True 集計で、その単位ごとに色分けされる。
+    """
+    out = df.copy()
+    if agg_mode == "グループ合計" and "group_label" in out.columns:
+        out["facility_name"] = out["group_label"]
+    elif agg_mode == "全電源合計":
+        out["facility_name"] = "全電源合計"
+    return out
 
 
 def render_supply_period_and_kpis(
     filtered_base: pd.DataFrame,
+    group_mode: str = "電源個別",
 ) -> tuple[pd.DataFrame, pd.Timestamp, pd.Timestamp, str]:
     """
     供給カーブ・供給パターン分析専用：表示期間・日付ナビ・集計単位・KPI表示。
     需要側とは別のキーで表示期間を持つ（需要と供給でデータ期間が異なることがあるため）。
-    Returns: (filtered, start_dt, end_dt, agg_mode)  agg_mode は「電源別」または「全電源合計」。
+    Returns: (filtered, start_dt, end_dt, agg_mode)
+    agg_mode は「電源別」「グループ合計」（グルーピング時のみ）「全電源合計」のいずれか。
     """
     start_dt, end_dt, _period_option = render_flexible_period(
         filtered_base, key_prefix="supply", default_index=2, nav_end_state_key="supply_nav_end_date",
     )
 
+    agg_options = ["電源別", "全電源合計"]
+    if group_mode != "電源個別":
+        agg_options = ["電源別", "グループ合計", "全電源合計"]
     agg_mode = st.radio(
-        "集計単位", options=["電源別", "全電源合計"], index=0, horizontal=True, key="supply_agg_mode",
+        "集計単位", options=agg_options, index=1 if group_mode != "電源個別" else 0,
+        horizontal=True, key=f"supply_agg_mode_{'grp' if group_mode != '電源個別' else 'src'}",
     )
 
     filtered = analyzer.filter_by_period(filtered_base, start_dt, end_dt)

@@ -15,13 +15,13 @@ import visualizer
 st.title("🔆 供給カーブ")
 
 sdf = common.require_supply_data()
-filtered_base = common.render_source_filter(sdf)
-filtered, start_dt, end_dt, agg_mode = common.render_supply_period_and_kpis(filtered_base)
+filtered_base, group_mode = common.render_source_filter(sdf)
+filtered, start_dt, end_dt, agg_mode = common.render_supply_period_and_kpis(filtered_base, group_mode)
 
 period_label = common.format_date_range(start_dt, end_dt)
-ts = analyzer.aggregate_30min(filtered, by_facility=(agg_mode == "電源別"))
-if agg_mode != "電源別":
-    ts = ts.assign(facility_name="全電源合計")
+# 集計単位（電源別／グループ合計／全電源合計）に合わせて facility_name を読み替えてから集計する
+series = common.supply_series_for(filtered, agg_mode)
+ts = analyzer.aggregate_30min(series, by_facility=True)
 
 st.plotly_chart(
     visualizer.demand_timeseries(
@@ -41,7 +41,7 @@ if _df is not None and not _df.empty:
         )
     else:
         demand_total = analyzer.aggregate_30min(demand, by_facility=False)
-        supply_for_chart = filtered.rename(
+        supply_for_chart = series.rename(
             columns={"facility_name": "source_name", "consumption_kwh": "supply_kwh"}
         )
         st.plotly_chart(

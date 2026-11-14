@@ -312,16 +312,36 @@ if _supply_entries:
 # グループ管理
 # ---------------------------------------------------------------------------
 
+def _add_type_ui(kind: str, label: str, key: str) -> None:
+    """表の選択肢に独自の種別を追加する入力欄（追加した種別は保存され、次回以降も選べる）。"""
+    with st.expander(f"➕ {label}を追加する", expanded=False):
+        c1, c2 = st.columns([3, 1])
+        new_type = c1.text_input(
+            f"追加する{label}", key=f"{key}_input", placeholder="例：農業施設",
+            label_visibility="collapsed",
+        )
+        if c2.button("追加", key=f"{key}_btn"):
+            if grouping.add_extra_type(kind, new_type):
+                st.success(f"「{new_type.strip()}」を追加しました。表の{label}で選べます。")
+            else:
+                st.warning("空欄か、すでにある種別です。")
+
+
 if st.session_state.get("df") is not None:
     st.markdown("---")
     st.header("🏷 グループ管理")
-    st.caption("自動検出した地域・機能種別を編集できます。変更後は「保存」を押してください。")
+    st.caption(
+        "自動検出した地域・機能種別を編集できます。変更後は「保存」を押してください。"
+        "機能種別は施設名から自動判定しています（例：名前に「住宅」「アパート」→住宅、"
+        "「事業所」「工場」「株式会社」→事業所）。"
+    )
 
     _df = st.session_state["df"]
     facility_names = sorted(_df["facility_name"].unique().tolist())
     custom_groups = st.session_state.get("custom_groups", {})
     group_df = grouping.build_group_df(facility_names, custom_groups)
 
+    _add_type_ui("function_types", "機能種別", "add_function_type")
     edited = st.data_editor(
         group_df,
         column_config={
@@ -329,8 +349,7 @@ if st.session_state.get("df") is not None:
             "region": st.column_config.TextColumn("地域"),
             "function_type": st.column_config.SelectboxColumn(
                 "機能種別",
-                options=["行政", "学校", "文化・図書", "スポーツ", "保育・幼稚",
-                         "医療・福祉", "集会施設", "その他"],
+                options=grouping.type_options("function_types", group_df["function_type"].tolist()),
             ),
         },
         hide_index=True,
@@ -340,6 +359,34 @@ if st.session_state.get("df") is not None:
     if st.button("💾 グループ設定を保存"):
         grouping.save_custom_groups(edited)
         st.session_state["custom_groups"] = grouping.load_custom_groups()
+        st.success("保存しました")
+
+if st.session_state.get("supply_df") is not None:
+    st.markdown("---")
+    st.header("🏷 供給グループ管理")
+    st.caption(
+        "電源ごとの「電源種別」（住宅太陽光・小水力など）と「地域」を設定できます。"
+        "電源種別は電源名から自動判定しています（例：名前に「住宅」「屋根」→住宅太陽光、「水力」→小水力）。"
+        "変更後は「保存」を押してください。供給分析ページで電源種別・地域ごとの絞り込み・合計に使われます。"
+    )
+    _src_names = sorted(st.session_state["supply_df"]["source_name"].unique().tolist())
+    _sgroup_df = grouping.build_supply_group_df(_src_names, st.session_state.get("supply_custom_groups", {}))
+    _add_type_ui("source_types", "電源種別", "add_source_type")
+    _stype_opts = grouping.type_options("source_types", _sgroup_df["source_type"].tolist())
+    _sedited = st.data_editor(
+        _sgroup_df,
+        column_config={
+            "facility_name": st.column_config.TextColumn("電源名", disabled=True),
+            "source_type": st.column_config.SelectboxColumn("電源種別", options=_stype_opts, required=True),
+            "region": st.column_config.TextColumn("地域"),
+        },
+        hide_index=True,
+        use_container_width=True,
+        key="supply_group_editor",
+    )
+    if st.button("💾 供給グループ設定を保存"):
+        grouping.save_supply_groups(_sedited)
+        st.session_state["supply_custom_groups"] = grouping.load_supply_groups()
         st.success("保存しました")
 
 if st.session_state.get("df") is None:
