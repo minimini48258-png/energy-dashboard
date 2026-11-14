@@ -135,6 +135,10 @@ pg = st.navigation({
         st.Page("pages/demand_curve.py", title="需要カーブ", icon="📈"),
         st.Page("pages/demand_pattern.py", title="需要パターン分析", icon="📊"),
     ],
+    "供給分析": [
+        st.Page("pages/supply_curve.py", title="供給カーブ", icon="🔆"),
+        st.Page("pages/supply_pattern.py", title="供給パターン分析", icon="📊"),
+    ],
     "需給・シミュレーション": [
         st.Page("pages/balance.py", title="需給分析", icon="⚡"),
     ],

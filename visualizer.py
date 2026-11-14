@@ -36,6 +36,7 @@ def demand_timeseries(
     df: pd.DataFrame,
     title: str = "電力使用量（30分値）",
     y_label: str = "使用量 (kWh/30min)",
+    entity: str = "施設",
 ) -> go.Figure:
     """
     df: datetime, consumption_kwh[, facility_name]
@@ -48,13 +49,13 @@ def demand_timeseries(
         x="datetime",
         y="consumption_kwh",
         color="facility_name" if has_facility else None,
-        labels={"consumption_kwh": y_label, "datetime": "日時", "facility_name": "施設"},
+        labels={"consumption_kwh": y_label, "datetime": "日時", "facility_name": entity},
         title=title,
         color_discrete_sequence=COLORS,
     )
     fig.update_layout(
         hovermode="x unified",
-        legend_title_text="施設",
+        legend_title_text=entity,
         xaxis_title="日時",
         yaxis_title=y_label,
         margin=dict(l=20, r=20, t=50, b=20),
@@ -67,14 +68,14 @@ def demand_timeseries(
 # 日別使用量棒グラフ
 # ---------------------------------------------------------------------------
 
-def daily_bar(df: pd.DataFrame, by_facility: bool = False) -> go.Figure:
+def daily_bar(df: pd.DataFrame, by_facility: bool = False, metric: str = "使用量", entity: str = "施設") -> go.Figure:
     fig = px.bar(
         df,
         x="date",
         y="consumption_kwh",
         color="facility_name" if by_facility else None,
-        labels={"consumption_kwh": "使用量 (kWh/日)", "date": "日付", "facility_name": "施設"},
-        title="日別使用量",
+        labels={"consumption_kwh": f"{metric} (kWh/日)", "date": "日付", "facility_name": entity},
+        title=f"日別{metric}",
         color_discrete_sequence=COLORS,
     )
     fig.update_layout(margin=dict(l=20, r=20, t=50, b=20))
@@ -85,7 +86,7 @@ def daily_bar(df: pd.DataFrame, by_facility: bool = False) -> go.Figure:
 # 月別使用量棒グラフ
 # ---------------------------------------------------------------------------
 
-def monthly_bar(df: pd.DataFrame, by_facility: bool = False) -> go.Figure:
+def monthly_bar(df: pd.DataFrame, by_facility: bool = False, metric: str = "使用量", entity: str = "施設") -> go.Figure:
     df = df.copy()
     df["month_str"] = df["month"].dt.strftime("%Y-%m")
     fig = px.bar(
@@ -93,8 +94,8 @@ def monthly_bar(df: pd.DataFrame, by_facility: bool = False) -> go.Figure:
         x="month_str",
         y="consumption_kwh",
         color="facility_name" if by_facility else None,
-        labels={"consumption_kwh": "使用量 (kWh/月)", "month_str": "月", "facility_name": "施設"},
-        title="月別使用量",
+        labels={"consumption_kwh": f"{metric} (kWh/月)", "month_str": "月", "facility_name": entity},
+        title=f"月別{metric}",
         color_discrete_sequence=COLORS,
     )
     fig.update_layout(margin=dict(l=20, r=20, t=50, b=20))
@@ -105,14 +106,14 @@ def monthly_bar(df: pd.DataFrame, by_facility: bool = False) -> go.Figure:
 # 時間帯別平均棒グラフ
 # ---------------------------------------------------------------------------
 
-def hourly_avg_bar(df: pd.DataFrame, by_facility: bool = False) -> go.Figure:
+def hourly_avg_bar(df: pd.DataFrame, by_facility: bool = False, metric: str = "使用量", entity: str = "施設") -> go.Figure:
     fig = px.bar(
         df,
         x="hour",
         y="consumption_kwh",
         color="facility_name" if by_facility else None,
-        labels={"consumption_kwh": "平均使用量 (kWh/30min)", "hour": "時刻（時）", "facility_name": "施設"},
-        title="時間帯別平均使用量",
+        labels={"consumption_kwh": f"平均{metric} (kWh/30min)", "hour": "時刻（時）", "facility_name": entity},
+        title=f"時間帯別平均{metric}",
         color_discrete_sequence=COLORS,
     )
     fig.update_xaxes(dtick=1)
@@ -124,14 +125,14 @@ def hourly_avg_bar(df: pd.DataFrame, by_facility: bool = False) -> go.Figure:
 # 平日・休日比較折れ線
 # ---------------------------------------------------------------------------
 
-def weekday_holiday_line(df: pd.DataFrame) -> go.Figure:
+def weekday_holiday_line(df: pd.DataFrame, metric: str = "使用量") -> go.Figure:
     fig = px.line(
         df,
         x="hour",
         y="consumption_kwh",
         color="day_type",
-        labels={"consumption_kwh": "平均使用量 (kWh/30min)", "hour": "時刻（時）", "day_type": ""},
-        title="平日・休日の時間帯別平均使用量",
+        labels={"consumption_kwh": f"平均{metric} (kWh/30min)", "hour": "時刻（時）", "day_type": ""},
+        title=f"平日・休日の時間帯別平均{metric}",
         color_discrete_map={"平日": "#2E86AB", "休日": "#E84855"},
     )
     fig.update_xaxes(dtick=1)
@@ -143,16 +144,42 @@ def weekday_holiday_line(df: pd.DataFrame) -> go.Figure:
 # 施設別年間使用量ランキング
 # ---------------------------------------------------------------------------
 
-def facility_ranking_bar(df: pd.DataFrame) -> go.Figure:
+def facility_ranking_bar(
+    df: pd.DataFrame, metric: str = "使用量", entity: str = "施設", title: str | None = None,
+) -> go.Figure:
     fig = px.bar(
         df.sort_values("annual_kwh"),
         x="annual_kwh",
         y="facility_name",
         orientation="h",
-        labels={"annual_kwh": "年間使用量 (kWh)", "facility_name": "施設"},
-        title="施設別年間使用量ランキング",
+        labels={"annual_kwh": f"年間{metric} (kWh)" if title is None else f"{metric} (kWh)", "facility_name": entity},
+        title=title or f"{entity}別年間{metric}ランキング",
         color_discrete_sequence=COLORS,
     )
+    fig.update_layout(margin=dict(l=20, r=20, t=50, b=20))
+    return fig
+
+
+# ---------------------------------------------------------------------------
+# 季節別の時間帯平均（供給分析：太陽光・水力の季節変動を見る）
+# ---------------------------------------------------------------------------
+
+SEASON_COLORS = {"春": "#3BB273", "夏": "#E94F37", "秋": "#F18F01", "冬": "#2E86AB"}
+
+
+def season_hourly_line(df: pd.DataFrame, metric: str = "発電量") -> go.Figure:
+    """df: hour / season / consumption_kwh（analyzer.season_hourly_avg の戻り値）"""
+    fig = px.line(
+        df,
+        x="hour",
+        y="consumption_kwh",
+        color="season",
+        category_orders={"season": ["春", "夏", "秋", "冬"]},
+        labels={"consumption_kwh": f"平均{metric} (kWh/30min)", "hour": "時刻（時）", "season": ""},
+        title=f"季節別の時間帯別平均{metric}",
+        color_discrete_map=SEASON_COLORS,
+    )
+    fig.update_xaxes(dtick=1)
     fig.update_layout(margin=dict(l=20, r=20, t=50, b=20))
     return fig
 

@@ -137,6 +137,29 @@ def weekday_vs_holiday(df: pd.DataFrame) -> pd.DataFrame:
     )
 
 
+def season_hourly_avg(df: pd.DataFrame) -> pd.DataFrame:
+    """季節（春夏秋冬）別の時間帯平均を返す。"""
+    df = df.copy()
+    df["hour"] = df["datetime"].dt.hour
+    df["season"] = assign_season(df["datetime"])
+    return (
+        df.groupby(["hour", "season"], as_index=False)["consumption_kwh"]
+        .mean()
+        .sort_values(["hour", "season"])
+    )
+
+
+def supply_to_standard(supply_df: pd.DataFrame) -> pd.DataFrame:
+    """
+    供給データ（datetime / source_name / supply_kwh）を需要データと同じ列名
+    （datetime / facility_name / consumption_kwh）に読み替える。
+    需要分析の集計関数・グラフ関数をそのまま供給分析に使うため。
+    """
+    return supply_df.rename(
+        columns={"source_name": "facility_name", "supply_kwh": "consumption_kwh"}
+    )[["datetime", "facility_name", "consumption_kwh"]].copy()
+
+
 def facility_annual_ranking(df: pd.DataFrame) -> pd.DataFrame:
     """施設ごとの年間使用量ランキング。"""
     return (

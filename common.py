@@ -289,3 +289,74 @@ def render_period_and_kpis(
     st.markdown("---")
 
     return filtered, filtered_base, start_dt, end_dt, agg_mode
+
+
+# ---------------------------------------------------------------------------
+# 供給分析（供給カーブ・供給パターン分析）用
+# ---------------------------------------------------------------------------
+
+def require_supply_data() -> pd.DataFrame:
+    """
+    供給データが読み込まれていなければ案内を出して停止する。
+    読み込まれていれば、需要データと同じ列名（datetime / facility_name / consumption_kwh）に
+    読み替えたDataFrameを返す（facility_name=電源名, consumption_kwh=発電量kWh/30分）。
+    """
+    sdf = st.session_state.get("supply_df")
+    if sdf is None or sdf.empty:
+        st.info(
+            "👈 サイドバーの「データ読み込み」ページで供給データ（発電所の30分値）を読み込むか、"
+            "サンプル供給データを生成してください。"
+        )
+        st.stop()
+    return analyzer.supply_to_standard(sdf)
+
+
+def render_source_filter(sdf: pd.DataFrame) -> pd.DataFrame:
+    """電源の選択（初期値は「データ読み込み」ページで選んだ表示対象の電源）。"""
+    all_sources = sorted(sdf["facility_name"].unique().tolist())
+    default = [s for s in st.session_state.get("selected_supply_names", []) if s in all_sources] or all_sources
+    selected = st.multiselect("電源を選択", options=all_sources, default=default, key="supply_sel_sources")
+    if not selected:
+        st.warning("電源を1つ以上選択してください。")
+        st.stop()
+    return analyzer.filter_by_facilities(sdf, selected)
+
+
+def render_supply_period_and_kpis(
+    filtered_base: pd.DataFrame,
+) -> tuple[pd.DataFrame, pd.Timestamp, pd.Timestamp, str]:
+    """
+    供給カーブ・供給パターン分析専用：表示期間・日付ナビ・集計単位・KPI表示。
+    需要側とは別のキーで表示期間を持つ（需要と供給でデータ期間が異なることがあるため）。
+    Returns: (filtered, start_dt, end_dt, agg_mode)  agg_mode は「電源別」または「全電源合計」。
+    """
+    start_dt, end_dt, _period_option = render_flexible_period(
+        filtered_base, key_prefix="supply", default_index=2, nav_end_state_key="supply_nav_end_date",
+    )
+
+    agg_mode = st.radio(
+        "集計単位", options=["電源別", "全電源合計"], index=0, horizontal=True, key="supply_agg_mode",
+    )
+
+    filtered = analyzer.filter_by_period(filtered_base, start_dt, end_dt)
+    if filtered.empty:
+        st.warning("選択した期間・電源にデータがありません。")
+        st.stop()
+
+    total = filtered.groupby("datetime")["consumption_kwh"].sum()
+    total_kwh = float(total.sum())
+
+    def _fmt(v: float) -> str:
+        if v >= 1_000:
+            return f"{v/1_000:,.1f} MWh"
+        return f"{v:.2f} kWh"
+
+    m1, m2, m3, m4 = st.columns(4)
+    m1.metric("積算発電量", _fmt(total_kwh))
+    # 30分値(kWh) × 2 = その30分の平均出力(kW)
+    m2.metric("最大出力", f"{float(total.max()) * 2:,.1f} kW", help="選択電源合計の30分値の最大 × 2（30分平均出力）")
+    m3.metric("平均 (30min)", f"{float(total.mean()):,.2f} kWh")
+    m4.metric("表示期間", format_date_range(start_dt, end_dt))
+    st.markdown("---")
+
+    return filtered, start_dt, end_dt, agg_mode
