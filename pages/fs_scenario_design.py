@@ -54,6 +54,8 @@ with st.container(border=True):
     st.caption(
         "従量料金モードは4種類：一律／時間帯別（昼夜2区分）／季節別（夏季7-9月・その他季）／"
         "累進段階制（低圧・従量電灯B型を想定した3段階）。"
+        "標準プランの初期値は北陸電力の料金単価（税込。燃料費調整額・再エネ賦課金は含まない）です"
+        "（低圧＝従量電灯B、高圧＝業務用電力、特別高圧＝業務用特別高圧電力。※要確認）。"
     )
 
     _updated_plans: list[retail_fs.TariffPlan] = []
@@ -101,19 +103,19 @@ with st.container(border=True):
                 new_summer = scol.number_input(
                     "夏季単価（7-9月・円/kWh）", min_value=0.0, value=plan.summer_rate,
                     step=0.1, key=f"fs_plan_summer_{i}",
-                    help="出典：中部電力ミライズ 高圧業務用電力(FR相当) 目安値 ※要確認",
+                    help="初期値の出典：北陸電力 業務用電力（高圧）の料金単価・税込 ※要確認",
                 )
                 new_other = ocol.number_input(
                     "その他季単価（円/kWh）", min_value=0.0, value=plan.other_rate,
                     step=0.1, key=f"fs_plan_other_{i}",
-                    help="出典：中部電力ミライズ 高圧業務用電力(FR相当) 目安値 ※要確認",
+                    help="初期値の出典：北陸電力 業務用電力（高圧）の料金単価・税込 ※要確認",
                 )
             else:  # tiered
                 t1c, t2c, t3c = st.columns(3)
                 _t1 = t1c.number_input(
                     "第1段階 〜120kWh (円/kWh)", min_value=0.0,
                     value=plan.tiered_rates[0][1], step=0.1, key=f"fs_plan_t1_{i}",
-                    help="出典：中部電力ミライズ 従量電灯B 目安値 ※要確認",
+                    help="初期値の出典：北陸電力 従量電灯Bの料金単価・税込 ※要確認",
                 )
                 _t2 = t2c.number_input(
                     "第2段階 120〜300kWh (円/kWh)", min_value=0.0,
@@ -140,7 +142,18 @@ with st.container(border=True):
             power_factor_discount=new_pf,
         ))
 
-    pcol1, pcol2 = st.columns(2)
+    pcol1, pcol2, pcol3 = st.columns(3)
+    with pcol3:
+        if st.button("↩ 北陸電力の初期値に戻す", key="fs_plan_reset",
+                     help="料金プランを北陸電力の標準料金（低圧・高圧・特別高圧の3プラン）に置き換えて保存します。"
+                          "追加・編集したプランは消えます。"):
+            _defaults = retail_fs.default_tariff_plans()
+            st.session_state["retail_fs_tariffs"] = [asdict(p) for p in _defaults]
+            retail_fs.save_tariff_plans(_defaults)
+            # 入力欄に残った旧値を消し、初期値が表示されるようにする
+            for _k in [k for k in st.session_state.keys() if str(k).startswith("fs_plan_")]:
+                del st.session_state[_k]
+            st.rerun()
     with pcol1:
         if st.button("➕ 新規プランを追加", key="fs_plan_add_new"):
             _updated_plans.append(retail_fs.TariffPlan(name=f"新規プラン{len(_updated_plans) + 1}"))

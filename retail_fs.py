@@ -15,12 +15,16 @@ retail_fs.py
     売上総利益（粗利益） = 売上高 - 再エネ賦課金（納付） - (電力調達費 + 託送料金 + 容量拠出金)
     売上高 = 基本料金 + 従量料金 + 燃料費調整額 + 再エネ賦課金 + 市場売却収入
 
-料金プランの季節別・累進段階別モードのデフォルト値は、中部電力ミライズの公開料金
-（2026年7月 Web調査、※要確認。実際の契約単価は同社公式サイトの最新料金表で確認のこと）:
-  - 高圧業務用電力(FRプラン相当): 基本料金 約1,716.26〜2,002.26円/kW、
-    電力量料金 夏季(7-9月) 約18.97〜20.30円/kWh、その他季 約18.00〜19.21円/kWh
-  - 従量電灯B: 電力量料金 第1段階(〜120kWh)21.20円、第2段階(120〜300kWh)25.67円、
-    第3段階(300kWh超)28.62円/kWh
+料金プラン（標準プラン）のデフォルト値は、北陸電力の公式サイト掲載の料金単価
+（2026年11月 Web調査。消費税等相当額込み、燃料費調整額・再エネ賦課金は含まない。※要確認。
+実際の契約単価は同社公式サイトの最新料金表で確認のこと）:
+  - 低圧：従量電灯B（https://www.rikuden.co.jp/ryokin/minsei.html）
+    基本料金 10Aあたり302.50円（1kVA≒1kWとみなし302.50円/kW・月に換算）、
+    電力量料金 第1段階(〜120kWh)30.86円、第2段階(120〜300kWh)34.75円、第3段階(300kWh超)36.46円/kWh
+  - 高圧：業務用電力（https://www.rikuden.co.jp/jiyuka/ryokin2.html）
+    基本料金 2,151.00円/kW・月、電力量料金 夏季(7-9月)・その他季とも27.25円/kWh
+  - 特別高圧：業務用特別高圧電力・20kV/30kV供給（https://www.rikuden.co.jp/jiyuka/ryokin1.html）
+    基本料金 2,090.50円/kW・月、電力量料金 夏季・その他季とも25.95円/kWh
   - 再エネ発電促進賦課金: 経済産業省公表 2026年5月〜2027年4月 4.18円/kWh
 を参考値として採用している。
 """
@@ -44,7 +48,7 @@ VOLTAGE_CLASSES: list[str] = ["低圧", "高圧", "特別高圧"]
 DAY_HOURS   = list(range(8, 22))   # 8-22時
 NIGHT_HOURS = [h for h in range(24) if h not in DAY_HOURS]
 
-# 季節別プランで使う夏季区分（中部電力の標準的な区分：7〜9月）
+# 季節別プランで使う夏季区分（北陸電力の料金表の夏季：7月1日〜9月30日）
 SUMMER_MONTHS = {7, 8, 9}
 
 # JEPX残差（市場調達分）の排出係数の目安値（kg-CO2/kWh）。ガイド記載の取引所係数を参照。
@@ -73,11 +77,11 @@ class TariffPlan:
     flat_rate: float = 25.0                   # 一律単価（円/kWh）
     day_rate: float = 27.0                    # 時間帯別：昼間（8-22時）単価（円/kWh）
     night_rate: float = 18.0                  # 時間帯別：夜間（22-8時）単価（円/kWh）
-    summer_rate: float = 19.6                 # 季節別：夏季（7-9月）単価（円/kWh）※要確認
-    other_rate: float = 18.6                  # 季節別：その他季単価（円/kWh）※要確認
+    summer_rate: float = 27.25                # 季節別：夏季（7-9月）単価（円/kWh）北陸電力 業務用電力 ※要確認
+    other_rate: float = 27.25                 # 季節別：その他季単価（円/kWh）北陸電力 業務用電力 ※要確認
     tiered_rates: list[tuple[Optional[float], float]] = field(
-        default_factory=lambda: [(120.0, 21.20), (300.0, 25.67), (None, 28.62)]
-    )  # 累進段階制：(上限kWh, 単価円/kWh) を段階順に。最終段は上限None ※要確認
+        default_factory=lambda: [(120.0, 30.86), (300.0, 34.75), (None, 36.46)]
+    )  # 北陸電力 従量電灯B  # 累進段階制：(上限kWh, 単価円/kWh) を段階順に。最終段は上限None ※要確認
     power_factor_discount: bool = True        # 高圧・特別高圧の力率割引/割増（基準85%・1pt=1%）を適用するか
 
 
@@ -101,20 +105,22 @@ class TransmissionRate:
 
 def default_tariff_plans() -> list[TariffPlan]:
     """
-    電圧区分ごとのサンプル料金プラン。
-    低圧・高圧は中部電力ミライズの公開料金（従量電灯B・高圧業務用電力）を参考にした
-    目安値、特別高圧は一般的な水準の目安値（いずれも※要確認）。
+    電圧区分ごとの標準料金プラン。北陸電力の公式料金単価（消費税等相当額込み）を初期値とする
+    （出典・調査時期はモジュール冒頭のdocstring参照。いずれも※要確認）。
+      低圧：従量電灯B／高圧：業務用電力／特別高圧：業務用特別高圧電力（20kV・30kV供給）
+    低圧の基本料金は「10Aあたり302.50円」を1kVA≒1kWとみなして円/kW・月に換算している。
     """
     return [
         TariffPlan(name="標準プラン（低圧・従量電灯B型）", voltage_class="低圧",
-                   basic_yen_per_kw=0.0, volumetric_mode="tiered",
-                   tiered_rates=[(120.0, 21.20), (300.0, 25.67), (None, 28.62)],
+                   basic_yen_per_kw=302.50, volumetric_mode="tiered",
+                   tiered_rates=[(120.0, 30.86), (300.0, 34.75), (None, 36.46)],
                    power_factor_discount=False),
-        TariffPlan(name="標準プラン（高圧・季節別）", voltage_class="高圧",
-                   basic_yen_per_kw=1_860.0, volumetric_mode="seasonal",
-                   summer_rate=19.6, other_rate=18.6),
-        TariffPlan(name="標準プラン（特別高圧）", voltage_class="特別高圧",
-                   basic_yen_per_kw=1_600.0, volumetric_mode="tou", day_rate=16.0, night_rate=11.5),
+        TariffPlan(name="標準プラン（高圧・業務用電力型）", voltage_class="高圧",
+                   basic_yen_per_kw=2_151.00, volumetric_mode="seasonal",
+                   summer_rate=27.25, other_rate=27.25),
+        TariffPlan(name="標準プラン（特別高圧・業務用特別高圧電力型）", voltage_class="特別高圧",
+                   basic_yen_per_kw=2_090.50, volumetric_mode="seasonal",
+                   summer_rate=25.95, other_rate=25.95),
     ]
 
 
