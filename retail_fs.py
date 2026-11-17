@@ -125,11 +125,19 @@ def default_tariff_plans() -> list[TariffPlan]:
 
 
 def default_transmission_rates() -> dict[str, TransmissionRate]:
-    """託送料金の初期値（目安値）。エリア・年度で実際の単価は異なるため必ず確認・編集してください。"""
+    """
+    託送料金の初期値。北陸電力送配電の託送供給等約款・標準接続送電サービス（2024年4月1日以降、
+    消費税相当額込み）の料金単価（https://www.rikuden.co.jp/nw_soden_yakkan/ryoukin.html、
+    2026年11月確認、※要確認）。
+      低圧：電灯標準（基本料金はSB・主開閉器契約の1kVAあたり192.50円を1kVA≒1kWとして換算。
+            小売の従量電灯B型プランと同じ契約方式を想定）
+      高圧：高圧標準／特別高圧：特別高圧標準
+    低圧で実量契約の場合は基本242.00円/kW、動力標準は実量契約539.00円/kW・4.69円/kWh。
+    """
     return {
-        "低圧":    TransmissionRate("低圧",    basic_yen_per_kw=0.0,    volumetric_yen_per_kwh=8.5),
-        "高圧":    TransmissionRate("高圧",    basic_yen_per_kw=650.0,  volumetric_yen_per_kwh=3.0),
-        "特別高圧": TransmissionRate("特別高圧", basic_yen_per_kw=500.0,  volumetric_yen_per_kwh=1.5),
+        "低圧":    TransmissionRate("低圧",    basic_yen_per_kw=192.50, volumetric_yen_per_kwh=6.83),
+        "高圧":    TransmissionRate("高圧",    basic_yen_per_kw=748.00, volumetric_yen_per_kwh=1.76),
+        "特別高圧": TransmissionRate("特別高圧", basic_yen_per_kw=572.00, volumetric_yen_per_kwh=0.85),
     }
 
 

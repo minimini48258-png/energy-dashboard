@@ -5,7 +5,7 @@ JEPX（日本卸電力取引所）スポット市場の実績価格ファイル�
 
 対応フォーマット:
   A) JEPX公式CSV「スポット取引結果」形式:
-     受渡日 / 時刻コード(1〜48) / システムプライス(円/kWh) / エリアプライス中部(円/kWh) 等
+     受渡日 / 時刻コード(1〜48) / システムプライス(円/kWh) / エリアプライス北陸(円/kWh) 等
   B) 汎用形式: datetime 列 + price 系の列（列名は自動マッピング）
 """
 
@@ -24,8 +24,8 @@ _PRICE_ALIASES = [
     "jepx_price_yen", "jepx_price", "price", "単価",
     "システムプライス(円/kwh)", "システムプライス",
 ]
-# エリアプライス列（中部電力管内なので「中部」を優先的に探す）
-_AREA_PRICE_CANDIDATES = ["エリアプライス中部(円/kwh)", "エリアプライス中部", "中部エリアプライス"]
+# エリアプライス列（北陸電力管内なので「北陸」を優先的に探す。無ければシステムプライスを使う）
+_AREA_PRICE_CANDIDATES = ["エリアプライス北陸(円/kwh)", "エリアプライス北陸", "北陸エリアプライス"]
 
 
 def _normalize(s: str) -> str:
@@ -71,7 +71,7 @@ def _load_official_format(df: pd.DataFrame) -> pd.DataFrame:
 
     price_col = _find_col(cols, _AREA_PRICE_CANDIDATES) or _find_col(cols, _PRICE_ALIASES)
     if price_col is None:
-        raise ValueError("価格列（エリアプライス中部 または システムプライス）が見つかりません。")
+        raise ValueError("価格列（エリアプライス北陸 または システムプライス）が見つかりません。")
 
     code = pd.to_numeric(df[code_col], errors="coerce")
     minutes_from_midnight = (code - 1).clip(lower=0) * 30

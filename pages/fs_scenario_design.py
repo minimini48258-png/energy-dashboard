@@ -217,8 +217,22 @@ with st.container(border=True):
 # ── ③ 託送料金 ────────────────────────────────────────────────────
 with st.container(border=True):
     st.markdown("**③ 託送料金（電圧区分別）**")
+    st.caption(
+        "初期値は北陸電力送配電の標準接続送電サービスの料金単価（2024年4月1日以降・税込。"
+        "低圧＝電灯標準〔基本料金は1kVAあたりを1kWに換算〕、高圧＝高圧標準、特別高圧＝特別高圧標準。※要確認）。"
+    )
     _default_trans = retail_fs.default_transmission_rates()
     _saved_trans = _saved.get("transmission_rates", {})
+    if st.button("↩ 北陸電力送配電の初期値に戻す", key="fs_trans_reset",
+                 help="託送料金の入力欄を北陸電力送配電の単価に戻します（シナリオ設計の保存時に反映されます）。"):
+        # 入力欄の状態を消し、保存済みの値ではなく初期値で描画し直す
+        for _vc in retail_fs.VOLTAGE_CLASSES:
+            st.session_state.pop(f"fs_trans_basic_{_vc}", None)
+            st.session_state.pop(f"fs_trans_vol_{_vc}", None)
+        st.session_state["fs_trans_use_default"] = True
+        st.rerun()
+    if st.session_state.pop("fs_trans_use_default", False):
+        _saved_trans = {}
     transmission_rates: dict[str, retail_fs.TransmissionRate] = {}
     _trans_cols = st.columns(3)
     for vc, col in zip(retail_fs.VOLTAGE_CLASSES, _trans_cols):
@@ -266,7 +280,8 @@ with st.container(border=True):
     jepx_upload = st.file_uploader(
         "JEPX実績価格ファイル（CSV／Excel）をアップロード（任意）",
         type=["csv", "xlsx"], key="jepx_actual_upload",
-        help="JEPX公式CSV（受渡日・時刻コード・エリアプライス中部等）または datetime+price の汎用形式に対応",
+        help="JEPX公式CSV（受渡日・時刻コード・エリアプライス北陸等。北陸が無ければシステムプライスを使用）"
+             "または datetime+price の汎用形式に対応",
     )
     if jepx_upload is not None:
         try:
@@ -311,7 +326,8 @@ with st.container(border=True):
     st.caption(
         "実績データがない時間帯・データ未アップロード時は下記の目安値（季節×時間帯）を使用します。"
         "出典：JEPXシステムプライス週平均 約19.09円/kWh（新電力ネット, 2026/7/19週）を基準にした季節按分の目安値。"
-        "※要確認・中部エリア固有の値ではありません。"
+        "※要確認・北陸エリア固有の値ではありません（北陸エリアの価格で試算するには、"
+        "エリアプライス北陸を含むJEPX実績CSVをアップロードしてください）。"
     )
     _jepx_labels = {
         "深夜（0〜6時）": list(range(0, 6)), "朝（6〜9時）": list(range(6, 9)),
