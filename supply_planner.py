@@ -9,11 +9,14 @@ import json
 import math
 from dataclasses import asdict, dataclass, field
 from pathlib import Path
+
 from typing import Optional
 
 import pandas as pd
 
-SOURCES_FILE = Path("/tmp/energy_dashboard/supply_sources.json")
+import storage
+
+SOURCES_FILE = storage.DATA_DIR / "supply_sources.json"
 
 
 def _solar_bell_curve(sunrise: int = 6, sunset: int = 18) -> list[float]:
@@ -146,6 +149,22 @@ def apply_procurement_ratios(
         df["source_name"].map(ratios_pct).fillna(100.0) / 100.0
     )
     return df
+
+
+def cap_supply_to_demand(supply_df: pd.DataFrame, demand_df: pd.DataFrame) -> pd.DataFrame:
+    """
+    30分コマごとに、供給合計が需要合計を超える分を按分で削る（余剰を発生させない）。
+    「余剰は買い取らない・売らない（自家消費できる分だけ調達する）」前提の試算に使う。
+    電源別の比率は保ったまま全電源を同じ倍率で縮める。需要が無いコマの供給は0になる。
+    """
+    if supply_df.empty:
+        return supply_df
+    total = supply_df.groupby("datetime")["supply_kwh"].sum()
+    demand = demand_df.groupby("datetime")["consumption_kwh"].sum()
+    ratio = (demand.reindex(total.index).fillna(0.0) / total.where(total > 0)).clip(upper=1.0).fillna(1.0)
+    out = supply_df.copy()
+    out["supply_kwh"] = out["supply_kwh"] * out["datetime"].map(ratio).fillna(1.0)
+    return out
 
 
 def save_sources(sources: list[SupplySource]) -> None:

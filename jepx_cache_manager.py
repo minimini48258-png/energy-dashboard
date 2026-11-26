@@ -11,7 +11,9 @@ from pathlib import Path
 
 import pandas as pd
 
-JEPX_CACHE_DIR = Path("/tmp/energy_dashboard/jepx_cache")
+import storage
+
+JEPX_CACHE_DIR = storage.DATA_DIR / "jepx_cache"
 MAX_ENTRIES = 5
 
 

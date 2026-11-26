@@ -15,6 +15,7 @@ import analyzer
 import common
 import financial_model
 import retail_fs
+import scenario_manager
 import supply_planner
 import visualizer
 
@@ -38,19 +39,33 @@ jepx_by_month_hour = {
 }
 _jepx_actual_df = st.session_state.get("jepx_actual_df")
 jepx_actual_series = _jepx_actual_df.set_index("datetime")["jepx_price_yen"] if _jepx_actual_df is not None else None
+jepx_by_month_hour, jepx_actual_series = scenario_manager.apply_jepx_shift(
+    jepx_by_month_hour, jepx_actual_series, float(fs_design.get("jepx_shift_yen_per_kwh", 0.0) or 0.0)
+)
 capital_yen = fs_design.get("capital_yen", 0.0)
 collection_lag_months = int(fs_design.get("collection_lag_months", 2))
 procurement_ratios = fs_design.get("procurement_ratios", {})
 
 _uploaded = st.session_state.get("supply_df")
-_supply_parts = []
+_filtered_upload = None
 if _uploaded is not None:
     _sel = st.session_state.get("selected_supply_names", [])
     _filtered_upload = _uploaded[_uploaded["source_name"].isin(_sel)] if _sel else _uploaded
-    _supply_parts.append(_filtered_upload)
 _sources = [supply_planner.SupplySource(**s) for s in st.session_state.get("supply_sources", [])]
 
 fs_demand_df = common.render_period_selector(filtered_base, key_prefix="fs")
+
+# 施設設定に無い施設は売上・託送の対象外なので、需給バランスの需要からも除く（需給と収支の食い違いを防ぐ）
+_cfg_names = {c.facility_name for c in facility_configs}
+if _cfg_names and not fs_demand_df.empty:
+    _out_of_scope = sorted(set(fs_demand_df["facility_name"].unique()) - _cfg_names)
+    if _out_of_scope:
+        st.caption(
+            f"ℹ️ 施設設定にない {len(_out_of_scope)} 施設は試算の対象外です"
+            f"（{', '.join(_out_of_scope[:3])}{' ほか' if len(_out_of_scope) > 3 else ''}）。"
+            "含める場合は「シナリオ設計」の施設設定に追加してください。"
+        )
+        fs_demand_df = fs_demand_df[fs_demand_df["facility_name"].isin(_cfg_names)]
 
 
 def _result_fingerprint(demand_df: pd.DataFrame, design: dict) -> tuple:
@@ -66,6 +81,21 @@ def _result_fingerprint(demand_df: pd.DataFrame, design: dict) -> tuple:
     return (period_key, design_key)
 
 
+_jepx_note = (
+    "JEPX：実績データを使用" if jepx_actual_series is not None
+    else "JEPX：目安値（全国システムプライス感。北陸エリア実績ではありません）"
+)
+_shift = float(fs_design.get("jepx_shift_yen_per_kwh", 0.0) or 0.0)
+st.caption(
+    f"{_jepx_note}{f'（{_shift:+.1f}円/kWh加減）' if _shift else ''} ／ 余剰の扱い："
+    f"{scenario_manager.SURPLUS_MODES.get(fs_design.get('surplus_mode', 'buy_and_sell'), '')}"
+)
+if not sum((fs_design.get("sga_items") or {}).values()) or not fs_design.get("capacity_unit_yen_per_kw_year"):
+    st.warning(
+        "販管費または容量拠出金が0円のままです。営業利益・純利益は過大に出ます。"
+        "粗利益で比較するか、「シナリオ設計」で入力してください。"
+    )
+
 if not fs_demand_df.empty:
     st.caption(
         f"対象期間: {fs_demand_df['datetime'].min().strftime('%Y/%m/%d')} 〜 "
@@ -80,16 +110,9 @@ if st.button("▶ 小売FS試算実行", type="primary", key="run_retail_fs"):
     else:
         try:
             with st.spinner("計算中..."):
-                fs_ts = pd.DatetimeIndex(fs_demand_df["datetime"].sort_values().unique())
-                supply_parts = list(_supply_parts)
-                if _sources:
-                    supply_parts.append(supply_planner.combine_supply_profiles(_sources, fs_ts))
-                fs_supply_df = (
-                    pd.concat(supply_parts, ignore_index=True) if supply_parts
-                    else pd.DataFrame(columns=["datetime", "source_name", "supply_kwh"])
+                fs_supply_df, fs_balance_df = scenario_manager.build_supply_and_balance(
+                    fs_design, fs_demand_df, _filtered_upload, _sources,
                 )
-                fs_supply_df = supply_planner.apply_procurement_ratios(fs_supply_df, procurement_ratios)
-                fs_balance_df = financial_model.calc_balance(fs_demand_df, fs_supply_df)
 
                 result = retail_fs.run_fs(
                     demand_df=fs_demand_df,

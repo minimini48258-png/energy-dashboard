@@ -38,9 +38,11 @@ from typing import Optional
 
 import pandas as pd
 
-FACILITY_CONFIG_FILE = Path("/tmp/energy_dashboard/retail_fs_facilities.json")
-TARIFF_PLAN_FILE = Path("/tmp/energy_dashboard/retail_fs_tariffs.json")
-FS_DESIGN_FILE = Path("/tmp/energy_dashboard/fs_design.json")
+import storage
+
+FACILITY_CONFIG_FILE = storage.DATA_DIR / "retail_fs_facilities.json"
+TARIFF_PLAN_FILE = storage.DATA_DIR / "retail_fs_tariffs.json"
+FS_DESIGN_FILE = storage.DATA_DIR / "fs_design.json"
 
 VOLTAGE_CLASSES: list[str] = ["低圧", "高圧", "特別高圧"]
 
@@ -93,6 +95,11 @@ class FacilityConfig:
     voltage_class: str = "高圧"
     power_factor_pct: float = 100.0
     tariff_plan_name: str = ""
+    # この行が何契約分の合計か。「町内363戸合計」のような集約行は戸数を入れる。
+    # 累進段階制（従量電灯B型など）は1契約あたりの月間kWhに段階単価を当てるため、
+    # 集約行は kWh÷n_units で段階料金を計算して n_units 倍する。基本料金・託送の基本料金は
+    # contract_kw を「集約行の合計契約kW」として扱う（n_units では割らない）。
+    n_units: int = 1
 
 
 @dataclass
@@ -142,7 +149,7 @@ def default_transmission_rates() -> dict[str, TransmissionRate]:
 
 
 # ---------------------------------------------------------------------------
-# 永続化（/tmp 配下の JSON。他モジュール（grouping.py 等）と同じ方式）
+# 永続化（storage.DATA_DIR 配下の JSON。他モジュール（grouping.py 等）と同じ方式）
 # ---------------------------------------------------------------------------
 
 def save_facility_configs(configs: list[FacilityConfig]) -> None:
@@ -200,6 +207,50 @@ def load_tariff_plans() -> list[TariffPlan]:
 # ---------------------------------------------------------------------------
 # 契約電力の目安値
 # ---------------------------------------------------------------------------
+
+def detect_n_units(facility_name: str) -> int:
+    """施設名から集約戸数を推定する（例：「住宅_三世代・その他世帯_町内363戸合計(推計)」→363）。無ければ1。"""
+    import re
+    m = re.search(r"町内\s*(\d+)\s*戸", facility_name or "")
+    return int(m.group(1)) if m else 1
+
+
+def parse_contract_table(table: pd.DataFrame) -> dict[str, float]:
+    """
+    契約電力の一覧表（施設名と契約電力(kW)の2列以上のCSV／Excel）を {施設名: 契約kW} にする。
+    列名は「facility_name / 施設名」「contract_kw / 契約電力(kW)」などを自動判定する。
+    """
+    def _find(cands: list[str]) -> Optional[str]:
+        for col in table.columns:
+            norm = str(col).strip().lower().replace(" ", "").replace("（", "(").replace("）", ")")
+            if any(c in norm for c in cands):
+                return col
+        return None
+
+    name_col = _find(["facility_name", "施設名", "施設", "name"])
+    kw_col = _find(["contract_kw", "契約電力", "契約kw", "契約容量"])
+    if name_col is None or kw_col is None:
+        raise ValueError("施設名の列と契約電力(kW)の列が見つかりません（例：facility_name, contract_kw）。")
+    out: dict[str, float] = {}
+    for name, kw in zip(table[name_col], pd.to_numeric(table[kw_col], errors="coerce")):
+        if pd.notna(kw) and str(name).strip():
+            out[str(name).strip()] = float(kw)
+    return out
+
+
+def default_voltage_class(peak_kw: float, facility_name: str = "", n_units: int = 1) -> str:
+    """
+    電圧区分の初期値を決める。施設名に「低圧」「高圧」があればそれを優先し、複数戸を集約した行（n_units>1）は低圧、
+    それ以外はピーク需要kWが50kW以上なら高圧、未満なら低圧とする（特別高圧は手動設定）。
+    """
+    if "低圧" in (facility_name or ""):
+        return "低圧"
+    if "高圧" in (facility_name or ""):
+        return "高圧"
+    if n_units > 1:
+        return "低圧"
+    return "高圧" if peak_kw >= 50 else "低圧"
+
 
 def suggest_contract_kw(demand_df: pd.DataFrame, facility_name: str) -> float:
     """施設の30分値実績からピークkWを推計し、契約電力の目安値（10kW単位で切上げ）を返す。"""
@@ -303,8 +354,10 @@ def calc_facility_revenue(
             )
         )
         if plan.volumetric_mode == "tiered":
+            _n = max(int(getattr(cfg, "n_units", 1) or 1), 1)
+            # 集約行（n_units>1）は1契約あたりの月間kWhで段階料金を求め、契約数倍する
             monthly["volumetric_revenue"] = monthly["kwh"].apply(
-                lambda kwh: _tiered_energy_charge(kwh, plan.tiered_rates)
+                lambda kwh: _tiered_energy_charge(kwh / _n, plan.tiered_rates) * _n
             )
         monthly["facility_name"] = facility_name
         monthly["basic_revenue"] = basic_per_month

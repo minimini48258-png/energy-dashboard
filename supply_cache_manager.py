@@ -11,7 +11,9 @@ from pathlib import Path
 
 import pandas as pd
 
-SUPPLY_CACHE_DIR = Path("/tmp/energy_dashboard/supply_cache")
+import storage
+
+SUPPLY_CACHE_DIR = storage.DATA_DIR / "supply_cache"
 MAX_ENTRIES = 5
 
 

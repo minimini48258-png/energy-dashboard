@@ -2,7 +2,7 @@
 ppa_scenario_manager.py
 「PPA採算性」シナリオ（ppa_retail_calc.SimulationInputs一式）の保存・読込・比較実行。
 retail_fs.save_fs_design / scenario_manager.Scenario と同じ永続化パターン
-（/tmp/energy_dashboard/ 配下のJSONファイル）に揃えている。
+（storage.DATA_DIR 配下のJSONファイル）に揃えている。
 """
 
 from __future__ import annotations
@@ -12,9 +12,11 @@ from dataclasses import asdict, dataclass, field
 from datetime import datetime
 from pathlib import Path
 
+import storage
+
 import ppa_retail_calc as calc
 
-_DIR = Path("/tmp/energy_dashboard")
+_DIR = storage.DATA_DIR
 _DESIGN_FILE = _DIR / "ppa_design.json"
 _SCENARIOS_FILE = _DIR / "ppa_scenarios.json"
 

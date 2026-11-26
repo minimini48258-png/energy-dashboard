@@ -11,7 +11,9 @@ from pathlib import Path
 
 import pandas as pd
 
-GROUPS_FILE = Path("/tmp/energy_dashboard/groups.json")
+import storage
+
+GROUPS_FILE = storage.DATA_DIR / "groups.json"
 
 FUNCTION_KEYWORDS: dict[str, list[str]] = {
     "行政": ["役場", "庁舎", "市役所", "町役場", "村役場", "区役所", "支所", "出張所", "行政"],
@@ -27,7 +29,7 @@ FUNCTION_KEYWORDS: dict[str, list[str]] = {
 FUNCTION_TYPE_OPTIONS: list[str] = list(FUNCTION_KEYWORDS.keys()) + ["その他"]
 
 # 画面から追加した独自の種別（機能種別・電源種別）の保存先
-EXTRA_TYPES_FILE = Path("/tmp/energy_dashboard/extra_types.json")
+EXTRA_TYPES_FILE = storage.DATA_DIR / "extra_types.json"
 
 
 def load_extra_types() -> dict[str, list[str]]:
@@ -147,7 +149,7 @@ def add_group_column(df: pd.DataFrame, group_df: pd.DataFrame, col: str) -> pd.D
 # 供給側（電源）のグループ管理：電源種別（住宅太陽光・小水力など）と地域
 # ---------------------------------------------------------------------------
 
-SUPPLY_GROUPS_FILE = Path("/tmp/energy_dashboard/supply_groups.json")
+SUPPLY_GROUPS_FILE = storage.DATA_DIR / "supply_groups.json"
 
 # 判定は上から順に行う（「住宅」「屋根」を含む太陽光を事業用太陽光より先に判定するため）
 SOURCE_TYPE_KEYWORDS: dict[str, list[str]] = {

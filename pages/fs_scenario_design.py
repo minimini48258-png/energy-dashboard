@@ -177,21 +177,66 @@ _existing_cfg = {c["facility_name"]: c for c in st.session_state["retail_fs_faci
 
 with st.container(border=True):
     st.markdown("**② 施設設定（契約電力・電圧区分・料金プラン割当）**")
-    st.caption("契約電力の初期値は実績30分値のピークから自動推計した目安です。必要に応じて修正してください。")
+    st.caption(
+        "契約電力の初期値は実績30分値のピークから自動推計した目安です（電圧区分は50kW以上＝高圧、未満＝低圧と仮置き）。"
+        "実際の契約電力・電圧区分は検針票・契約書で確認して修正してください。"
+    )
 
-    _default_plan = plan_names[1] if len(plan_names) > 1 else (plan_names[0] if plan_names else "")
+    _fallback_plan = plan_names[1] if len(plan_names) > 1 else (plan_names[0] if plan_names else "")
+
+    def _plan_for(voltage_class: str) -> str:
+        """電圧区分に合う最初の料金プラン名（無ければ既定プラン）。"""
+        return next((p.name for p in tariff_plans if p.voltage_class == voltage_class), _fallback_plan)
+
+    with st.expander("📥 契約電力の一覧（CSV／Excel）を取り込む", expanded=False):
+        st.caption(
+            "施設名と契約電力(kW)の列があるファイル（例：facility_name, contract_kw）を取り込むと、"
+            "同じ施設名の契約電力を上書きします。デマンドデータ冒頭の契約電力などを一覧にして使えます。"
+        )
+        _ct_file = st.file_uploader("契約電力の一覧", type=["csv", "xlsx"], key="fs_contract_table")
+        if _ct_file is not None and st.button("この契約電力を反映", key="fs_contract_apply"):
+            try:
+                _tbl = (pd.read_csv(_ct_file) if _ct_file.name.lower().endswith(".csv") else pd.read_excel(_ct_file))
+                _kw_map = retail_fs.parse_contract_table(_tbl)
+                _applied = 0
+                _cur = {c["facility_name"]: dict(c) for c in st.session_state["retail_fs_facilities"]}
+                for _n in facility_names:
+                    if _n in _kw_map:
+                        _base_cfg = _cur.get(_n) or {
+                            "facility_name": _n, "voltage_class": retail_fs.default_voltage_class(_kw_map[_n], _n, retail_fs.detect_n_units(_n)),
+                            "power_factor_pct": 100.0, "n_units": retail_fs.detect_n_units(_n),
+                        }
+                        _base_cfg["contract_kw"] = _kw_map[_n]
+                        _base_cfg.setdefault("voltage_class", retail_fs.default_voltage_class(_kw_map[_n]))
+                        if not _base_cfg.get("tariff_plan_name") in plan_names:
+                            _base_cfg["tariff_plan_name"] = _plan_for(_base_cfg["voltage_class"])
+                        _cur[_n] = _base_cfg
+                        _applied += 1
+                st.session_state["retail_fs_facilities"] = list(_cur.values())
+                st.session_state.pop("retail_fs_facility_editor", None)
+                st.success(f"{_applied} 施設の契約電力を反映しました（一覧にあった {len(_kw_map)} 施設中）。")
+                st.rerun()
+            except Exception as _ct_err:
+                st.error(f"契約電力の取り込みに失敗しました: {_ct_err}")
+
     _rows = []
     for name in facility_names:
         cfg = _existing_cfg.get(name)
         if cfg is not None and cfg.get("tariff_plan_name") in plan_names:
-            _rows.append(cfg)
+            _row = dict(cfg)
+            _row.setdefault("n_units", retail_fs.detect_n_units(name))
+            _rows.append(_row)
         else:
+            _kw = retail_fs.suggest_contract_kw(filtered_base, name)
+            _peak = float(filtered_base.loc[filtered_base["facility_name"] == name, "consumption_kwh"].max() or 0.0) * 2
+            _vc = retail_fs.default_voltage_class(_peak, name, retail_fs.detect_n_units(name))
             _rows.append({
                 "facility_name": name,
-                "contract_kw": retail_fs.suggest_contract_kw(filtered_base, name),
-                "voltage_class": "高圧",
+                "contract_kw": _kw,
+                "voltage_class": _vc,
                 "power_factor_pct": 100.0,
-                "tariff_plan_name": _default_plan,
+                "tariff_plan_name": _plan_for(_vc),
+                "n_units": retail_fs.detect_n_units(name),
             })
     _fac_df = pd.DataFrame(_rows)
 
@@ -203,6 +248,11 @@ with st.container(border=True):
             "voltage_class": st.column_config.SelectboxColumn("電圧区分", options=retail_fs.VOLTAGE_CLASSES),
             "power_factor_pct": st.column_config.NumberColumn("力率(%)", min_value=50.0, max_value=105.0, step=1.0),
             "tariff_plan_name": st.column_config.SelectboxColumn("料金プラン", options=plan_names),
+            "n_units": st.column_config.NumberColumn(
+                "集約戸数", min_value=1, step=1, format="%d",
+                help="「町内363戸合計」のように複数契約を1行にまとめた施設は戸数を入れる。累進段階制の料金を"
+                     "1契約あたりの月間kWhで計算して戸数倍します（契約電力は集約行の合計kWを入れる）。通常は1。",
+            ),
         },
         hide_index=True, use_container_width=True, key="retail_fs_facility_editor",
     )
@@ -305,7 +355,11 @@ with st.container(border=True):
             st.session_state["jepx_actual_file_id"] = None
             st.rerun()
     else:
-        st.info("現在、JEPX実績データは使用していません（下記の目安値を使用します）。")
+        st.warning(
+            "JEPX実績データを使用していません。下記の目安値（全国システムプライス感の季節×時間帯カーブ）で"
+            "試算します。北陸エリアの実績ではないため、売電・不足調達の損益は目安です。"
+            "エリアプライス北陸を含むJEPX実績CSVのアップロードを推奨します。"
+        )
 
     _jepx_entries = jepx_cache_manager.list_entries()
     if _jepx_entries:
@@ -369,6 +423,13 @@ with st.container(border=True):
             step=0.5, key=f"jepx_other_{label}",
         )
 
+    jepx_shift = st.number_input(
+        "JEPX価格の加減額（円/kWh）", value=float(_saved.get("jepx_shift_yen_per_kwh", 0.0)), step=0.5,
+        key="fs_jepx_shift",
+        help="目安値・実績のどちらにも一律に足し引きします（マイナス可。価格は0円未満にしません）。"
+             "市況の上振れ・下振れを見るシナリオに使います。",
+    )
+
     jepx_by_month_hour: dict[tuple[int, int], float] = {}
     for m in range(1, 13):
         season_prices = _summer_prices if m in retail_fs.SUMMER_MONTHS else _other_prices
@@ -397,6 +458,15 @@ procurement_ratios: dict[str, float] = {}
 market_indexed_sources: dict[str, bool] = {}
 with st.container(border=True):
     st.markdown("**⑥ 電源別 調達コスト・排出係数・地域内フラグ・調達比率**")
+    _mode_keys = list(scenario_manager.SURPLUS_MODES.keys())
+    surplus_mode = st.radio(
+        "余剰電力（供給が需要を上回る分）の扱い", _mode_keys,
+        index=_mode_keys.index(_saved.get("surplus_mode", "buy_and_sell"))
+        if _saved.get("surplus_mode", "buy_and_sell") in _mode_keys else 0,
+        format_func=lambda k: scenario_manager.SURPLUS_MODES[k], key="fs_surplus_mode",
+        help="供給が需要の何倍もある場合、全量買取＋JEPX売却だと利益が市場価格と買取単価の差益に大きく左右されます。"
+             "実際の契約（FIT・FIP・PPAなどで余剰に別の買い手がいる等）に合わせて選んでください。",
+    )
     st.caption(
         "相対電源（固定単価での相対契約）も「電源管理」で登録した電源として、ここで単価を設定できます。"
         "「調達比率」は、登録された発電量・供給実績のうち実際に調達する割合です（例: 相対電源の一部だけ契約する場合など）。"
@@ -480,6 +550,11 @@ with st.container(border=True):
     }
     st.session_state["fs_sga_items"] = sga_items
 
+    if sum(sga_items.values()) == 0:
+        st.warning("販管費が0円です。営業利益・純利益が過大に出るため、人件費・システム費などを入力するか、粗利益で比較してください。")
+    if not capacity_unit:
+        st.warning("容量拠出金の単価が0円です。売上原価が過小になります（④で設定）。")
+
     tax_rate = st.number_input(
         "法人税等 実効税率(%)", min_value=0.0, max_value=60.0,
         value=_saved.get("corporate_tax_rate_pct", retail_fs.DEFAULT_CORPORATE_TAX_RATE_PCT),
@@ -518,6 +593,8 @@ _fs_design = {
     "emission_factors": emission_factors,
     "local_flags": local_flags,
     "procurement_ratios": procurement_ratios,
+    "surplus_mode": surplus_mode,
+    "jepx_shift_yen_per_kwh": jepx_shift,
     "market_indexed_sources": market_indexed_sources,
     "sga_items": sga_items,
     "corporate_tax_rate_pct": tax_rate,
