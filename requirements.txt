@@ -5,3 +5,4 @@ openpyxl>=3.1.0
 numpy>=1.26.0
 pyarrow>=14.0.0
 watchdog>=4.0.0
+# deploy-marker: 2026-11-26 (依存関係ファイルの変更でCommunity Cloudにアプリを再起動させるための印)
